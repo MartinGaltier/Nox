@@ -11,6 +11,9 @@ nox-core.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["NSString"] }
+objc2-app-kit = { workspace = true, default-features = false, features = ["std", "NSSound"] }
 
 [lints]
 workspace = true

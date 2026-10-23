@@ -3,16 +3,19 @@
 
 use nox_core::{Module, ModuleId};
 
+pub mod clock;
+pub mod sound;
+pub mod timers;
+mod wake;
+
 pub fn modules() -> Vec<Box<dyn Module>> {
-    [
-        ModuleId::Agents,
-        ModuleId::Watch,
-        ModuleId::Timers,
-        ModuleId::Companion,
-    ]
-    .into_iter()
-    .map(todo_module::Placeholder::boxed)
-    .collect()
+    let mut v: Vec<Box<dyn Module>> = vec![Box::new(timers::TimersModule::new())];
+    v.extend(
+        [ModuleId::Agents, ModuleId::Watch, ModuleId::Companion]
+            .into_iter()
+            .map(todo_module::Placeholder::boxed),
+    );
+    v
 }
 
 mod todo_module;
