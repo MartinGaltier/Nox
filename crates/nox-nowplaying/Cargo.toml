@@ -1,0 +1,35 @@
+[package]
+name = "nox-nowplaying"
+description = "Now Playing adapter loaded into /usr/bin/perl (MediaRemote answers platform binaries only since macOS 15.4)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[lib]
+# cdylib: the adapter loaded by packaging/resources/now-playing.pl.
+# rlib: unit tests of the pure protocol helpers.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+serde_json.workspace = true
+libc.workspace = true
+objc2.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2-foundation = { workspace = true, features = [
+    "std",
+    "block2",
+    "NSArray",
+    "NSData",
+    "NSDate",
+    "NSDictionary",
+    "NSNotification",
+    "NSObject",
+    "NSOperation",
+    "NSString",
+    "NSValue",
+] }
+
+[lints]
+workspace = true
