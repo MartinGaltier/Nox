@@ -1,0 +1,16 @@
+[package]
+name = "nox-ui"
+description = "Native AppKit UI: island window, animations, settings window, menu bar."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nox-core.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true

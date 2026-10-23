@@ -1,0 +1,35 @@
+# Build output
+/target/
+**/target/
+/dist/
+*.app/
+*.dmg
+*.zip
+*.o
+*.dylib
+
+# Worktrees for parallel agents
+/.worktrees/
+
+# Local / personal data — never commit
+*.log
+/logs/
+*.sqlite
+*.db
+.env
+.env.*
+*.pem
+*.p12
+*.mobileprovision
+/local/
+/scratch/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Editors
+.idea/
+.vscode/
+*.swp

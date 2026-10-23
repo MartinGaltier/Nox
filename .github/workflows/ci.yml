@@ -1,0 +1,31 @@
+name: CI
+on:
+  push:
+    branches: [main, "agent/**", "feat/**", "fix/**"]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+      - name: Format
+        run: cargo fmt --all --check
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - name: Tests (automatable only)
+        # Hardware/permission dependent tests are #[ignore]d; run them on a
+        # real Mac with: cargo test -- --ignored
+        run: cargo test --workspace --locked
+      - name: Build app bundle (arm64)
+        run: scripts/build-app.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Nox-app-arm64
+          path: dist/Nox.app
+          retention-days: 7

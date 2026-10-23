@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleName</key>
+	<string>Nox</string>
+	<key>CFBundleDisplayName</key>
+	<string>Nox</string>
+	<key>CFBundleIdentifier</key>
+	<string>io.github.martingaltier.nox</string>
+	<key>CFBundleExecutable</key>
+	<string>nox</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>__VERSION__</string>
+	<key>CFBundleVersion</key>
+	<string>__BUILD__</string>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>fr</string>
+	<key>CFBundleIconFile</key>
+	<string>AppIcon</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>14.0</string>
+	<key>LSArchitecturePriority</key>
+	<array><string>arm64</string></array>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticTermination</key>
+	<false/>
+	<key>NSCalendarsFullAccessUsageDescription</key>
+	<string>Nox affiche vos prochains événements dans l’îlot. Les données restent sur ce Mac.</string>
+	<key>NSCalendarsUsageDescription</key>
+	<string>Nox affiche vos prochains événements dans l’îlot. Les données restent sur ce Mac.</string>
+	<key>NSRemindersFullAccessUsageDescription</key>
+	<string>Nox peut afficher vos rappels datés à côté du calendrier.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Nox affiche un aperçu de votre caméra dans l’îlot, uniquement quand vous l’ouvrez. Aucune image n’est enregistrée.</string>
+	<key>NSAppleEventsUsageDescription</key>
+	<string>Nox pilote la lecture (Musique, Spotify…) et lit la file d’attente des lecteurs compatibles.</string>
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Nox affiche la batterie de vos accessoires Bluetooth.</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>© 2026 Martin Galtier — GPL-3.0-or-later. Inspiré de Vorssaint (GPL-3.0-or-later).</string>
+</dict>
+</plist>

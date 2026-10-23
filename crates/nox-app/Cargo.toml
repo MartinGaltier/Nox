@@ -1,0 +1,23 @@
+[package]
+name = "nox-app"
+description = "Nox application entry point: wires modules, hub and UI."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "nox"
+path = "src/main.rs"
+
+[dependencies]
+nox-core.workspace = true
+nox-metrics.workspace = true
+nox-power.workspace = true
+nox-integrations.workspace = true
+nox-activities.workspace = true
+nox-ui.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true

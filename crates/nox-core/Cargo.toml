@@ -1,0 +1,18 @@
+[package]
+name = "nox-core"
+description = "Shared contracts for Nox: module trait, state hub, models, commands, settings, storage."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+log.workspace = true
+crossbeam-channel.workspace = true
+dispatch2.workspace = true
+
+[lints]
+workspace = true

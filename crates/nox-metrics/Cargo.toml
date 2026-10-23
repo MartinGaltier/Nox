@@ -1,0 +1,16 @@
+[package]
+name = "nox-metrics"
+description = "System monitor collectors (CPU, GPU, sensors, memory, battery, power, network, disk)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+nox-core.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+
+[lints]
+workspace = true
