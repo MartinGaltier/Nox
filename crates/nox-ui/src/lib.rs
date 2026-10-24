@@ -3,6 +3,7 @@
 #![cfg_attr(test, allow(clippy::field_reassign_with_default))]
 
 pub mod alerts;
+mod appkit;
 pub mod compact;
 pub mod format;
 pub mod geom;
@@ -32,7 +33,5 @@ pub struct UiContext {
 
 /// Runs the AppKit application on the main thread. Never returns.
 pub fn run(ctx: UiContext) -> ! {
-    let _ = ctx;
-    eprintln!("nox-ui: not implemented yet");
-    std::process::exit(0)
+    appkit::run(ctx)
 }
