@@ -338,6 +338,7 @@ mod tests {
         let st = IslandState {
             timers: Some(TimersState {
                 timers: vec![CountdownTimer {
+                    ends_at: None,
                     id: 1,
                     label: String::new(),
                     duration_secs: 60.0,

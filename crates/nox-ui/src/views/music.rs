@@ -385,6 +385,8 @@ mod tests {
     fn state(playing: bool) -> IslandState {
         IslandState {
             music: Some(MusicState {
+                unavailable: None,
+                automation: Default::default(),
                 now_playing: Some(NowPlaying {
                     player: Some(PlayerInfo {
                         bundle_id: "com.spotify.client".into(),

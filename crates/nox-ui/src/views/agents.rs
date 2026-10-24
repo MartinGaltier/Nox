@@ -200,11 +200,25 @@ mod tests {
         let settings = Settings::default();
         let st = IslandState {
             agents: Some(AgentsState {
+                period: Default::default(),
+                budget: None,
+                prices_updated: String::new(),
+                card_order: vec![],
                 providers: vec![
                     ProviderStatus {
+                        tokens_period: nox_core::Reading::pending(),
+                        cost_period_usd: nox_core::Reading::pending(),
+                        unpriced_requests: 0,
+                        plan: None,
+                        banked_resets: nox_core::Reading::pending(),
+                        accounts: vec![],
                         provider: AgentProvider::Claude,
                         detected: true,
                         sessions: vec![AgentSession {
+                            turn_started_at: None,
+                            tokens: Default::default(),
+                            cost_usd: nox_core::Reading::pending(),
+                            account: None,
                             id: "a".into(),
                             provider: AgentProvider::Claude,
                             project: Some("nox".into()),
@@ -215,6 +229,12 @@ mod tests {
                             last_event_at: 0.0,
                         }],
                         limits: Reading::Measured(vec![LimitWindow {
+                            kind: Default::default(),
+                            window_minutes: None,
+                            scope: None,
+                            source: Default::default(),
+                            observed_at: 0.0,
+                            resets_estimated: false,
                             name: "5 h".into(),
                             used_percent: Reading::Measured(42.0),
                             resets_at: Some(1_800_000_000.0 + 3600.0),
@@ -229,6 +249,12 @@ mod tests {
                         note: None,
                     },
                     ProviderStatus {
+                        tokens_period: nox_core::Reading::pending(),
+                        cost_period_usd: nox_core::Reading::pending(),
+                        unpriced_requests: 0,
+                        plan: None,
+                        banked_resets: nox_core::Reading::pending(),
+                        accounts: vec![],
                         provider: AgentProvider::Codex,
                         detected: true,
                         sessions: vec![],
@@ -238,6 +264,12 @@ mod tests {
                         note: None,
                     },
                     ProviderStatus {
+                        tokens_period: nox_core::Reading::pending(),
+                        cost_period_usd: nox_core::Reading::pending(),
+                        unpriced_requests: 0,
+                        plan: None,
+                        banked_resets: nox_core::Reading::pending(),
+                        accounts: vec![],
                         provider: AgentProvider::Copilot,
                         detected: false,
                         sessions: vec![],

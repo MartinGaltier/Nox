@@ -299,6 +299,7 @@ mod tests {
         camera(&mut s, &ctx(&st, &settings), page_rect(), true);
         assert!(!s.shows_camera);
         st.camera = Some(CameraState {
+            error: None,
             access: PermissionState::Granted,
             running: true,
             devices: vec!["Caméra FaceTime HD".into()],
@@ -324,6 +325,7 @@ mod tests {
                 ..Default::default()
             }),
             shortcuts: Some(ShortcutsState {
+                controls: Default::default(),
                 user_shortcuts: vec!["Mon flux".into()],
                 last_result: Some(Err("refusé".into())),
             }),

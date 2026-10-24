@@ -471,6 +471,8 @@ mod tests {
         let settings = Settings::default();
         let mut st = IslandState {
             calendar: Some(CalendarState {
+                reminders_access: Default::default(),
+                calendars: vec![],
                 access: PermissionState::NotDetermined,
                 events: vec![],
             }),
@@ -483,8 +485,11 @@ mod tests {
         ))));
         let now = 1_800_000_000.0;
         st.calendar = Some(CalendarState {
+            reminders_access: Default::default(),
+            calendars: vec![],
             access: PermissionState::Granted,
             events: vec![CalendarEvent {
+                call: None,
                 id: "e1".into(),
                 title: "Point d’équipe".into(),
                 start: now + 600.0,
@@ -519,6 +524,7 @@ mod tests {
         let mut st = IslandState {
             timers: Some(TimersState {
                 timers: vec![CountdownTimer {
+                    ends_at: None,
                     id: 7,
                     label: "Pâtes".into(),
                     duration_secs: 600.0,

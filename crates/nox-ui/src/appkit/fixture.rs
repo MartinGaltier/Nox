@@ -20,6 +20,8 @@ const TAG: &str = "[aperçu]";
 pub fn overlay(s: &mut IslandState, now: f64) {
     if s.music.is_none() {
         s.music = Some(MusicState {
+            unavailable: None,
+            automation: Default::default(),
             now_playing: Some(NowPlaying {
                 player: Some(PlayerInfo {
                     bundle_id: "preview".into(),
@@ -60,8 +62,11 @@ pub fn overlay(s: &mut IslandState, now: f64) {
     }
     if s.calendar.is_none() {
         s.calendar = Some(CalendarState {
+            reminders_access: Default::default(),
+            calendars: vec![],
             access: PermissionState::Granted,
             events: vec![CalendarEvent {
+                call: None,
                 id: "p1".into(),
                 title: format!("{TAG} Réunion d’exemple"),
                 start: now + 25.0 * 60.0,
@@ -77,10 +82,24 @@ pub fn overlay(s: &mut IslandState, now: f64) {
     }
     if s.agents.is_none() {
         s.agents = Some(AgentsState {
+            period: Default::default(),
+            budget: None,
+            prices_updated: String::new(),
+            card_order: vec![],
             providers: vec![ProviderStatus {
+                tokens_period: nox_core::Reading::pending(),
+                cost_period_usd: nox_core::Reading::pending(),
+                unpriced_requests: 0,
+                plan: None,
+                banked_resets: nox_core::Reading::pending(),
+                accounts: vec![],
                 provider: AgentProvider::Claude,
                 detected: true,
                 sessions: vec![AgentSession {
+                    turn_started_at: None,
+                    tokens: Default::default(),
+                    cost_usd: nox_core::Reading::pending(),
+                    account: None,
                     id: "p".into(),
                     provider: AgentProvider::Claude,
                     project: Some(format!("{TAG} projet")),
@@ -91,6 +110,12 @@ pub fn overlay(s: &mut IslandState, now: f64) {
                     last_event_at: now,
                 }],
                 limits: Reading::Estimated(vec![LimitWindow {
+                    kind: Default::default(),
+                    window_minutes: None,
+                    scope: None,
+                    source: Default::default(),
+                    observed_at: 0.0,
+                    resets_estimated: false,
                     name: "5 h".into(),
                     used_percent: Reading::Estimated(37.0),
                     resets_at: Some(now + 7200.0),
@@ -111,6 +136,7 @@ pub fn overlay(s: &mut IslandState, now: f64) {
     }
     if s.downloads.is_none() {
         s.downloads = Some(DownloadsState {
+            access: nox_core::permissions::PermissionState::Granted,
             items: vec![DownloadItem {
                 id: "d".into(),
                 file_name: format!("{TAG} fichier.zip"),

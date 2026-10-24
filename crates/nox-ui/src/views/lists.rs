@@ -448,6 +448,7 @@ mod tests {
         let settings = Settings::default();
         let st = IslandState {
             downloads: Some(DownloadsState {
+                access: nox_core::permissions::PermissionState::Granted,
                 items: vec![DownloadItem {
                     id: "d".into(),
                     file_name: "archive.zip".into(),
@@ -490,6 +491,8 @@ mod tests {
         files(&mut s, &ctx(&st, &settings), page_rect(), true);
         assert!(s.has_text("Déposez des fichiers"));
         st.files = Some(FilesState {
+            compressing: false,
+            last_result: None,
             items: vec![ShelfItem {
                 id: 3,
                 path: "/a/b.txt".into(),
@@ -514,6 +517,7 @@ mod tests {
         let settings = Settings::default();
         let st = IslandState {
             accessories: Some(AccessoriesState {
+                bluetooth: nox_core::permissions::PermissionState::Granted,
                 devices: vec![
                     Accessory {
                         id: "1".into(),

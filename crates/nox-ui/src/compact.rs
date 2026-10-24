@@ -260,10 +260,24 @@ mod tests {
 
     fn agents(phase: SessionPhase) -> AgentsState {
         AgentsState {
+            period: Default::default(),
+            budget: None,
+            prices_updated: String::new(),
+            card_order: vec![],
             providers: vec![ProviderStatus {
+                tokens_period: nox_core::Reading::pending(),
+                cost_period_usd: nox_core::Reading::pending(),
+                unpriced_requests: 0,
+                plan: None,
+                banked_resets: nox_core::Reading::pending(),
+                accounts: vec![],
                 provider: AgentProvider::Claude,
                 detected: true,
                 sessions: vec![AgentSession {
+                    turn_started_at: None,
+                    tokens: Default::default(),
+                    cost_usd: nox_core::Reading::pending(),
+                    account: None,
                     id: "s".into(),
                     provider: AgentProvider::Claude,
                     project: Some("nox".into()),
@@ -362,6 +376,7 @@ mod tests {
         let st = IslandState {
             timers: Some(TimersState {
                 timers: vec![CountdownTimer {
+                    ends_at: None,
                     id: 1,
                     label: "Thé".into(),
                     duration_secs: 300.0,
