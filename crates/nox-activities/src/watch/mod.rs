@@ -23,6 +23,8 @@ use tracker::Tracker;
 /// Consecutive capture failures before the watch is declared lost.
 const MAX_FAILURES: u32 = 3;
 const CAPTURE_TIMEOUT: Duration = Duration::from_secs(3);
+/// Delay before the reference capture of a new watch.
+const BASELINE_DELAY: Duration = Duration::from_millis(300);
 
 pub type Capturer = Arc<dyn Fn(Rect) -> Result<Vec<u8>, String> + Send + Sync>;
 pub type AccessCheck = Arc<dyn Fn(bool) -> bool + Send + Sync>;
@@ -140,6 +142,12 @@ impl WatchModule {
                 )
             };
             let mut failures = 0u32;
+            // The picker overlay may still be on screen for a frame after it
+            // closed: the reference capture waits so its veil is not taken
+            // for the region's content.
+            if token.sleep(BASELINE_DELAY) {
+                return;
+            }
             loop {
                 let shot = capturer(region);
                 if token.is_cancelled() {
@@ -430,6 +438,36 @@ mod tests {
         assert_eq!(calls.load(Ordering::SeqCst), n, "no capture after trigger");
         m.stop();
         assert!(hub.read(|s| s.watch.is_none()));
+    }
+
+    #[test]
+    fn reference_capture_waits_for_the_overlay_to_go() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let c2 = calls.clone();
+        let capturer: Capturer = Arc::new(move |_| {
+            c2.fetch_add(1, Ordering::SeqCst);
+            Ok(vec![1; tracker::SIDE * tracker::SIDE])
+        });
+        let hub = Hub::new();
+        let mut m = WatchModule::with(capturer, Arc::new(|_| true));
+        m.start(ctx(&hub, 250)).unwrap();
+        m.command(Command::Watch(WatchCommand::Start {
+            region: REGION,
+            trigger: WatchTrigger::AnyChange,
+        }));
+        std::thread::sleep(Duration::from_millis(150));
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            0,
+            "no capture right after Start"
+        );
+        std::thread::sleep(Duration::from_millis(400));
+        assert!(calls.load(Ordering::SeqCst) >= 1);
+        // Stopping during the delay ends the worker at once.
+        m.command(Command::Watch(WatchCommand::Again));
+        let t = std::time::Instant::now();
+        m.stop();
+        assert!(t.elapsed() < Duration::from_millis(200));
     }
 
     #[test]

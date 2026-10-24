@@ -1,5 +1,19 @@
 //! Native AppKit UI: island window, animations, settings window, menu bar.
 //! Owned by Agent Interface. Public contract: [`UiContext`], [`run`].
+#![cfg_attr(test, allow(clippy::field_reassign_with_default))]
+
+pub mod alerts;
+mod appkit;
+pub mod compact;
+pub mod format;
+pub mod geom;
+pub mod geometry;
+pub mod gesture;
+pub mod island;
+pub mod machine;
+pub mod scene;
+pub mod spring;
+pub mod views;
 
 use nox_core::{Hub, Settings, SettingsStore};
 use std::sync::Arc;
@@ -19,7 +33,5 @@ pub struct UiContext {
 
 /// Runs the AppKit application on the main thread. Never returns.
 pub fn run(ctx: UiContext) -> ! {
-    let _ = ctx;
-    eprintln!("nox-ui: not implemented yet");
-    std::process::exit(0)
+    appkit::run(ctx)
 }
