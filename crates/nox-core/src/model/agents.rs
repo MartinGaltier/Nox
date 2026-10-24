@@ -110,6 +110,32 @@ pub struct LimitWindow {
     pub resets_estimated: bool,
 }
 
+/// What the UI should say about a window at a given moment.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum LimitStatus {
+    /// Usage as read; renews at `resets_at` (estimated or read).
+    Current {
+        resets_at: Option<Timestamp>,
+        estimated: bool,
+    },
+    /// The window renewed after its last reading (at `renewed_at`): usage is
+    /// unknown until the agent reports again. Show « réinitialisée — en
+    /// attente d’une nouvelle lecture », never 0 % and never a past reset time.
+    Renewed { renewed_at: Timestamp },
+}
+
+impl LimitWindow {
+    pub fn status(&self, now: Timestamp) -> LimitStatus {
+        match self.resets_at {
+            Some(r) if r <= now => LimitStatus::Renewed { renewed_at: r },
+            r => LimitStatus::Current {
+                resets_at: r,
+                estimated: self.resets_estimated,
+            },
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct TokenUsage {
     pub input: u64,
