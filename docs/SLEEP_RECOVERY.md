@@ -213,6 +213,14 @@ Journal du helper : `/Library/Logs/Nox/nox-helper.log`.
   remplacer le helper embarqué *avant* l'installation peut aussi remplacer l'app qui
   demande le mot de passe. Seule une signature Developer ID avec exigence de Team ID
   fermerait ce cas.
+* **`--allowed-client` pointe vers un binaire modifiable par l'utilisateur.** Le chemin
+  autorisé (`…/Nox.app/Contents/MacOS/nox`) est dans un dossier que l'utilisateur
+  administrateur peut modifier : remplacer ce binaire suffit pour se faire accepter par
+  le helper. L'impact est borné par construction : la seule action exposée est
+  `pmset -a disablesleep 1|0`, sous bail, avec les gardes batterie (plancher 5 %) et
+  thermique du helper. Aucune commande arbitraire, aucun autre réglage, et pas de
+  lecture ni d'écriture de fichier choisi par le client. Le code root exécuté vient
+  toujours de la copie vérifiée dans `/Library/PrivilegedHelperTools`, jamais du bundle.
 * **Changement de session (Fast User Switching).** Le bail est conservé. Le nouvel
   utilisateur console ne peut pas le prendre (`busy`) tant que le propriétaire est
   connecté. Si le propriétaire cesse ses heartbeats, le helper restaure à l'expiration

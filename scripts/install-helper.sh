@@ -40,13 +40,15 @@ install -d -o root -g wheel -m 0755 "$STATE_DIR" "$LOG_DIR"
 # and get its code run as root.
 TMP="$DST.new.$$"
 rm -f "$TMP"
-install -o root -g wheel -m 0755 "$SRC" "$TMP"
+install -o root -g wheel -m 0700 "$SRC" "$TMP"
 if ! codesign --verify --strict -R="identifier \"$LABEL\"" "$TMP"; then
   rm -f "$TMP"
   echo "install-helper.sh: helper signature invalid" >&2
   exit 65
 fi
+chmod 0755 "$TMP"
 mv -f "$TMP" "$DST"
+# From here on only the verified root-owned copy "$DST" is executed.
 
 # The helper writes its own plist (paths XML-escaped by tested code).
 TMP="$PLIST.new.$$"

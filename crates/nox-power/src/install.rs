@@ -184,6 +184,31 @@ mod tests {
         assert!(!INSTALL_SCRIPT.contains("/etc/sudoers") && !INSTALL_SCRIPT.contains("visudo"));
     }
 
+    /// The root-run install verifies the root-owned copy, never the
+    /// user-writable source, and only ever executes the verified copy.
+    #[test]
+    fn install_verifies_the_copy_not_the_source() {
+        let lines: Vec<&str> = INSTALL_SCRIPT.lines().map(str::trim).collect();
+        let pos = |needle: &str| {
+            lines
+                .iter()
+                .position(|l| l.contains(needle))
+                .unwrap_or_else(|| panic!("missing {needle:?}"))
+        };
+        let copy = pos(r#"install -o root -g wheel -m 0700 "$SRC" "$TMP""#);
+        let verify = pos(r#"codesign --verify --strict -R="identifier \"$LABEL\"" "$TMP""#);
+        let publish = pos(r#"mv -f "$TMP" "$DST""#);
+        let run = pos(r#""$DST" --print-launchd-plist"#);
+        assert!(copy < verify && verify < publish && publish < run);
+        for l in &lines {
+            if l.starts_with('#') {
+                continue;
+            }
+            assert!(!l.contains(r#"codesign --verify --strict "$SRC""#), "{l}");
+            assert!(!l.starts_with(r#""$SRC""#), "source executed: {l}");
+        }
+    }
+
     #[test]
     fn scripts_refuse_without_root() {
         if nox_helper::sys::euid() == 0 {
