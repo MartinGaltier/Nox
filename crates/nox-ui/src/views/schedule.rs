@@ -176,7 +176,13 @@ pub fn timers(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         .filter(|c| c.run != TimerRun::Finished)
         .collect();
     let mut y = c0.y + 26.0;
-    for c in active.iter().take(2) {
+    // Room for the countdowns above the preset rows.
+    let shown = if cx.settings.timers.presets_secs.len() > 2 {
+        1
+    } else {
+        2
+    };
+    for c in active.iter().take(shown) {
         let running = c.run == TimerRun::Running;
         let rem = remaining(c.remaining_secs, c.observed_at, running, cx.now);
         if running {
@@ -242,10 +248,10 @@ pub fn timers(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         );
         y += 48.0;
     }
-    if active.len() > 2 {
+    if active.len() > shown {
         s.text(
             Rect::new(c0.x + 10.0, y, c0.w - 20.0, 13.0),
-            format!("+ {} autres", active.len() - 2),
+            format!("+ {} autres", active.len() - shown),
             tertiary(10.0),
         );
     }
@@ -259,11 +265,14 @@ pub fn timers(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         .take(4)
         .collect();
     if !presets.is_empty() {
-        let pw = (c0.w - 20.0 - 4.0 * (presets.len() as f64 - 1.0)) / presets.len() as f64;
+        // Two per row so "10 min" never truncates in a third of the island.
+        let pw = (c0.w - 24.0) / 2.0;
+        let rows = presets.len().div_ceil(2);
         for (i, p) in presets.iter().enumerate() {
+            let (col, row) = ((i % 2) as f64, (i / 2) as f64);
             let pr = Rect::new(
-                c0.x + 10.0 + i as f64 * (pw + 4.0),
-                c0.max_y() - 30.0,
+                c0.x + 10.0 + col * (pw + 4.0),
+                c0.max_y() - 8.0 - (rows as f64 - row) * 26.0,
                 pw,
                 22.0,
             );
@@ -323,31 +332,38 @@ pub fn timers(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             secondary(10.0).mono(),
         );
     }
-    let by = c1.max_y() - 30.0;
-    let third = (c1.w - 28.0) / 3.0;
-    pill(
+    let by = c1.max_y() - 34.0;
+    let mid = c1.mid_x();
+    icon_button(
         s,
         cx,
-        Rect::new(c1.x + 10.0, by, third, 22.0),
-        if sw.running { "Arrêter" } else { "Démarrer" },
-        sw.running,
-        send(TimerCommand::StopwatchToggle),
-    );
-    pill(
-        s,
-        cx,
-        Rect::new(c1.x + 14.0 + third, by, third, 22.0),
-        "Tour",
-        false,
-        send(TimerCommand::StopwatchLap),
-    );
-    pill(
-        s,
-        cx,
-        Rect::new(c1.x + 18.0 + 2.0 * third, by, third, 22.0),
-        "Zéro",
-        false,
+        Rect::new(mid - 52.0, by, 28.0, 28.0),
+        "arrow.counterclockwise",
+        12.0,
         send(TimerCommand::StopwatchReset),
+        "Remettre à zéro",
+    );
+    icon_button(
+        s,
+        cx,
+        Rect::new(mid - 16.0, by - 2.0, 32.0, 32.0),
+        if sw.running {
+            "pause.fill"
+        } else {
+            "play.fill"
+        },
+        15.0,
+        send(TimerCommand::StopwatchToggle),
+        if sw.running { "Arrêter" } else { "Démarrer" },
+    );
+    icon_button(
+        s,
+        cx,
+        Rect::new(mid + 24.0, by, 28.0, 28.0),
+        "flag",
+        12.0,
+        send(TimerCommand::StopwatchLap),
+        "Tour",
     );
 
     // Focus.
@@ -386,31 +402,34 @@ pub fn timers(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                 frac,
                 color,
             );
-            let bw = (c2.w - 28.0) / 3.0;
-            let by = c2.max_y() - 30.0;
-            pill(
+            let by = c2.max_y() - 34.0;
+            let mid = c2.mid_x();
+            icon_button(
                 s,
                 cx,
-                Rect::new(c2.x + 10.0, by, bw, 22.0),
-                if f.paused { "Reprendre" } else { "Pause" },
-                false,
-                send(TimerCommand::FocusPauseResume),
-            );
-            pill(
-                s,
-                cx,
-                Rect::new(c2.x + 14.0 + bw, by, bw, 22.0),
-                "Passer",
-                false,
-                send(TimerCommand::FocusSkip),
-            );
-            pill(
-                s,
-                cx,
-                Rect::new(c2.x + 18.0 + 2.0 * bw, by, bw, 22.0),
-                "Fin",
-                false,
+                Rect::new(mid - 52.0, by, 28.0, 28.0),
+                "stop.fill",
+                12.0,
                 send(TimerCommand::FocusStop),
+                "Terminer",
+            );
+            icon_button(
+                s,
+                cx,
+                Rect::new(mid - 16.0, by - 2.0, 32.0, 32.0),
+                if f.paused { "play.fill" } else { "pause.fill" },
+                15.0,
+                send(TimerCommand::FocusPauseResume),
+                if f.paused { "Reprendre" } else { "Pause" },
+            );
+            icon_button(
+                s,
+                cx,
+                Rect::new(mid + 24.0, by, 28.0, 28.0),
+                "forward.end.fill",
+                12.0,
+                send(TimerCommand::FocusSkip),
+                "Passer la phase",
             );
         }
         None => {

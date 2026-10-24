@@ -14,6 +14,8 @@ use nox_core::{Command, Section};
 
 struct Tile {
     title: &'static str,
+    /// The main reading has a value (otherwise `value` holds the reason).
+    available: bool,
     value: String,
     detail: String,
     series: Option<(Series, Option<f64>)>,
@@ -27,6 +29,7 @@ fn tiles(m: &MetricsSnapshot) -> Vec<Tile> {
     vec![
         Tile {
             title: "CPU",
+            available: m.cpu_total.value().is_some(),
             value: format::reading(&m.cpu_total, |v| format::percent(*v)),
             detail: format::reading(&m.cpu_temp, |v| format::celsius(*v)),
             series: Some((Series::Cpu, Some(100.0))),
@@ -34,6 +37,7 @@ fn tiles(m: &MetricsSnapshot) -> Vec<Tile> {
         },
         Tile {
             title: "GPU",
+            available: m.gpu_usage.value().is_some(),
             value: format::reading(&m.gpu_usage, |v| format::percent(*v)),
             detail: format::reading(&m.gpu_temp, |v| format::celsius(*v)),
             series: Some((Series::Gpu, Some(100.0))),
@@ -41,6 +45,7 @@ fn tiles(m: &MetricsSnapshot) -> Vec<Tile> {
         },
         Tile {
             title: "Mémoire",
+            available: mem.value().is_some(),
             value: format::reading(mem, |v| {
                 format!(
                     "{} / {}",
@@ -64,6 +69,7 @@ fn tiles(m: &MetricsSnapshot) -> Vec<Tile> {
         },
         Tile {
             title: "Batterie",
+            available: bat.value().is_some(),
             value: format::reading(bat, |b| format::percent(b.percent)),
             detail: match bat.value() {
                 Some(b) => {
@@ -91,6 +97,7 @@ fn tiles(m: &MetricsSnapshot) -> Vec<Tile> {
         },
         Tile {
             title: "Réseau",
+            available: net.value().is_some(),
             value: format::reading(net, |n| format!("↓ {}", format::rate(n.rx_bytes_per_sec))),
             detail: format::reading(net, |n| format!("↑ {}", format::rate(n.tx_bytes_per_sec))),
             series: Some((Series::NetRx, None)),
@@ -98,6 +105,11 @@ fn tiles(m: &MetricsSnapshot) -> Vec<Tile> {
         },
         Tile {
             title: "Puissance",
+            available: m
+                .power
+                .value()
+                .and_then(|p| p.system_watts.value())
+                .is_some(),
             value: format::reading(&m.power, |p| {
                 format::reading(&p.system_watts, |w| format::watts(*w))
             }),
@@ -139,17 +151,31 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             t.title,
             tertiary(9.5).weight(Weight::Semibold),
         );
-        s.text(
-            Rect::new(inner.x, inner.y + 12.0, inner.w, 18.0),
-            &t.value,
-            label(13.5).weight(Weight::Semibold).mono(),
-        );
-        s.text(
-            Rect::new(inner.x, inner.y + 30.0, inner.w, 12.0),
-            &t.detail,
-            secondary(9.5),
-        );
-        if let Some((series, max)) = t.series {
+        if t.available {
+            let value_w = if t.series.is_some() {
+                inner.w * 0.55
+            } else {
+                inner.w
+            };
+            s.text(
+                Rect::new(inner.x, inner.y + 12.0, value_w, 18.0),
+                &t.value,
+                label(13.5).weight(Weight::Semibold).mono(),
+            );
+            s.text(
+                Rect::new(inner.x, inner.y + 30.0, inner.w, 12.0),
+                &t.detail,
+                secondary(9.5),
+            );
+        } else {
+            // The reason, never a zero; no graph without a value.
+            s.text(
+                Rect::new(inner.x, inner.y + 14.0, inner.w, 26.0),
+                &t.value,
+                secondary(10.5).lines(2),
+            );
+        }
+        if let (true, Some((series, max))) = (t.available, t.series) {
             let g = Rect::new(
                 inner.x + inner.w * 0.55,
                 inner.y + 2.0,
