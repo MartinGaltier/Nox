@@ -12,6 +12,14 @@ use nox_core::model::scratchpad::ScratchpadCommand;
 use nox_core::permissions::PermissionState;
 use nox_core::{Command, Section};
 
+/// `~/Desktop` rather than the full home path.
+fn short_path(p: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(h) if !h.is_empty() && p.starts_with(&h) => format!("~{}", &p[h.len()..]),
+        _ => p.to_string(),
+    }
+}
+
 pub fn captures(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     let Some(c) = cx.state.captures.as_ref() else {
         return module_missing(s, r, Section::Captures, enabled);
@@ -27,7 +35,7 @@ pub fn captures(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             "Dossier des captures inaccessible",
             &format!(
                 "Autorisez Nox à lire « {} » dans Réglages Système › Confidentialité › Fichiers et dossiers.",
-                c.folder
+                short_path(&c.folder)
             ),
         );
         pill(
@@ -49,7 +57,10 @@ pub fn captures(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             r,
             "photo.on.rectangle",
             "Aucune capture récente",
-            &format!("Les captures d’écran de « {} » apparaissent ici.", c.folder),
+            &format!(
+                "Les captures d’écran de « {} » apparaissent ici.",
+                short_path(&c.folder)
+            ),
         );
     }
     let send = |cmd: CaptureCommand| Action::Send(Command::Captures(cmd));
