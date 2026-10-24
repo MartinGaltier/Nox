@@ -48,6 +48,7 @@ unsafe extern "C" {
     ) -> Boolean;
     fn CFDictionaryGetTypeID() -> CFTypeID;
     fn CFDictionaryGetValue(d: CFDictionaryRef, key: *const c_void) -> *const c_void;
+    fn CFArrayGetTypeID() -> CFTypeID;
     fn CFArrayGetCount(a: CFArrayRef) -> CFIndex;
     fn CFArrayGetValueAtIndex(a: CFArrayRef, idx: CFIndex) -> *const c_void;
 }
@@ -284,7 +285,9 @@ pub fn power_source() -> Option<PowerSourceInfo> {
         let providing = cf_string(IOPSGetProvidingPowerSourceType(blob.as_ptr()))?;
         let on_battery = providing == "Battery Power";
         let mut battery_percent = None;
-        if let Some(list) = CfOwned::from_create(IOPSCopyPowerSourcesList(blob.as_ptr())) {
+        if let Some(list) = CfOwned::from_create(IOPSCopyPowerSourcesList(blob.as_ptr()))
+            && CFGetTypeID(list.as_ptr()) == CFArrayGetTypeID()
+        {
             for i in 0..CFArrayGetCount(list.as_ptr()) {
                 let ps = CFArrayGetValueAtIndex(list.as_ptr(), i);
                 let d = IOPSGetPowerSourceDescription(blob.as_ptr(), ps);
@@ -448,18 +451,29 @@ mod tests {
     // Read-only probes: safe to run anywhere, but values depend on the machine.
     #[test]
     fn probes_do_not_crash() {
-        eprintln!("SleepDisabled: {:?}", sleep_disabled());
-        eprintln!("power source: {:?}", power_source());
-        eprintln!("thermal pressure: {:?}", thermal_pressure());
-        eprintln!(
+        // Uncaptured (direct stderr write) so a hard crash still shows where.
+        fn trace(msg: &str) {
+            use std::io::Write;
+            let _ = writeln!(std::io::stderr().lock(), "[probe] {msg}");
+        }
+        trace("SleepDisabled…");
+        trace(&format!("SleepDisabled: {:?}", sleep_disabled()));
+        trace("power source…");
+        trace(&format!("power source: {:?}", power_source()));
+        trace("thermal…");
+        trace(&format!("thermal pressure: {:?}", thermal_pressure()));
+        trace("clamshell…");
+        trace(&format!(
             "clamshell closed: {:?}, causes sleep: {:?}",
             clamshell_closed(),
             clamshell_causes_sleep()
-        );
+        ));
     }
 
     #[test]
     fn threshold_guard() {
+        let _ =
+            std::io::Write::write_all(&mut std::io::stderr(), b"[trace] threshold_guard start\n");
         let p = PowerSourceInfo {
             on_battery: true,
             battery_percent: Some(20),
@@ -485,6 +499,8 @@ mod tests {
 
     #[test]
     fn own_peer_identity() {
+        let _ =
+            std::io::Write::write_all(&mut std::io::stderr(), b"[trace] own_peer_identity start\n");
         let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
         use std::os::fd::AsRawFd;
         // SAFETY: getuid has no preconditions.
