@@ -172,7 +172,7 @@ impl Collector {
                 .or_else(|| mach::sysctl_i32("hw.pagesize").map(|v| v as u64))
                 .unwrap_or(16_384),
             battery: IoObject::matching("AppleSmartBattery"),
-            ioreport: Subscription::new("Energy Model"),
+            ioreport: Subscription::new("Energy Model", &power::CHANNELS),
             energy: EnergyTracker::default(),
             last_energy_at: None,
             store: DynamicStore::new(),
@@ -284,19 +284,28 @@ impl Collector {
         }
     }
 
+    /// Reads the shown sensors; the other `Tp`/`Te` keys only when no core
+    /// sensor answered (they exist solely as the CPU fallback).
     fn temperatures(&self) -> Result<Vec<Sample>, String> {
         let s = self.smc.as_ref().map_err(Clone::clone)?;
-        Ok(s.temps
-            .iter()
-            .filter_map(|t| {
-                let c = s.value(&t.key)?;
-                sensors::plausible(t.role, c).then(|| Sample {
-                    key: t.name.clone(),
-                    role: t.role,
-                    celsius: c,
+        let read = |fallback: bool| {
+            s.temps
+                .iter()
+                .filter(move |t| (t.role == Role::CpuOther) == fallback)
+                .filter_map(|t| {
+                    let c = s.value(&t.key)?;
+                    sensors::plausible(t.role, c).then(|| Sample {
+                        key: t.name.clone(),
+                        role: t.role,
+                        celsius: c,
+                    })
                 })
-            })
-            .collect())
+        };
+        let mut out: Vec<Sample> = read(false).collect();
+        if !out.iter().any(|x| x.role == Role::CpuCore) {
+            out.extend(read(true));
+        }
+        Ok(out)
     }
 
     fn memory(&self) -> Reading<nox_core::model::metrics::MemoryInfo> {

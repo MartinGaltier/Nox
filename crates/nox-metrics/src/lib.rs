@@ -90,12 +90,92 @@ pub mod diag {
 
     /// IOReport "Energy Model" deltas over `ms`: (group, channel, unit, value).
     pub fn energy(ms: u64) -> Result<Vec<(String, String, String, i64)>, String> {
-        let mut s = crate::sys::ioreport::Subscription::new("Energy Model")?;
+        let mut s = crate::sys::ioreport::Subscription::new("Energy Model", &[])?;
         s.sample()?;
         std::thread::sleep(Duration::from_millis(ms));
         Ok(s.sample()?
             .into_iter()
             .map(|d| (d.group, d.channel, d.unit, d.value))
             .collect())
+    }
+}
+
+#[doc(hidden)]
+pub mod profile {
+    //! Per-source cost of one sample (thread CPU time, averaged).
+
+    use crate::sys;
+    use std::time::Duration;
+
+    fn time(n: u32, mut f: impl FnMut()) -> Duration {
+        let t0 = sys::mach::thread_cpu_time();
+        for _ in 0..n {
+            f();
+        }
+        sys::mach::thread_cpu_time().saturating_sub(t0) / n
+    }
+
+    pub fn parts(n: u32) -> Vec<(&'static str, Duration)> {
+        let gpu = sys::iokit::IoObject::all_matching("IOAccelerator");
+        let batt = sys::iokit::IoObject::matching("AppleSmartBattery");
+        let smc = sys::smc::Smc::open().ok();
+        let mut ior =
+            sys::ioreport::Subscription::new("Energy Model", &crate::power::CHANNELS).ok();
+        let store = sys::net::DynamicStore::new();
+        let key = crate::smc::fourcc("Tp01");
+        let info = smc.as_ref().and_then(|s| s.key_info(key));
+        vec![
+            ("cpu_ticks", time(n, || drop(sys::mach::cpu_ticks()))),
+            ("vm_stats", time(n, || drop(sys::mach::vm_stats()))),
+            (
+                "gpu PerformanceStatistics",
+                time(n, || {
+                    for g in &gpu {
+                        drop(g.property("PerformanceStatistics").map(|v| v.to_value()));
+                    }
+                }),
+            ),
+            (
+                "smc read x1",
+                time(n, || {
+                    if let (Some(s), Some(i)) = (&smc, info) {
+                        drop(s.read(key, i));
+                    }
+                }),
+            ),
+            (
+                "battery registry (10 keys)",
+                time(n, || {
+                    if let Some(b) = &batt {
+                        for k in crate::battery::REGISTRY_KEYS {
+                            drop(b.property(k).map(|v| v.to_value()));
+                        }
+                    }
+                }),
+            ),
+            (
+                "IOPS power sources",
+                time(n, || drop(sys::iokit::power_sources())),
+            ),
+            (
+                "ioreport sample",
+                time(n, || {
+                    if let Some(s) = &mut ior {
+                        drop(s.sample());
+                    }
+                }),
+            ),
+            (
+                "primary interface (configd)",
+                time(n, || {
+                    drop(store.as_ref().and_then(|s| s.primary_interface()))
+                }),
+            ),
+            (
+                "interface counters",
+                time(n, || drop(sys::net::interface_counters())),
+            ),
+            ("mounts", time(n, || drop(sys::disk::mounts()))),
+        ]
     }
 }

@@ -30,7 +30,11 @@ unsafe extern "C" {
 
 #[link(name = "CoreFoundation", kind = "framework")]
 unsafe extern "C" {
+    static kCFTypeArrayCallBacks: u8;
     fn CFDictionaryCreateMutableCopy(alloc: CFTypeRef, cap: isize, d: CFTypeRef) -> CFTypeRef;
+    fn CFDictionarySetValue(d: CFTypeRef, key: CFTypeRef, value: CFTypeRef);
+    fn CFArrayCreateMutable(alloc: CFTypeRef, cap: isize, callbacks: *const u8) -> CFTypeRef;
+    fn CFArrayAppendValue(a: CFTypeRef, v: CFTypeRef);
 }
 
 /// One energy counter delta between two samples.
@@ -51,7 +55,9 @@ pub struct Subscription {
 }
 
 impl Subscription {
-    pub fn new(group: &str) -> Result<Self, String> {
+    /// Subscribes to `group`, restricted to the named channels (sampling the
+    /// whole "Energy Model" group costs ~1.5 ms per sample on the M2).
+    pub fn new(group: &str, only: &[&str]) -> Result<Self, String> {
         let g = Cf::string(group);
         // SAFETY: documented libIOReport call pattern (as used by macmon /
         // asitop): copy the group's channel dictionary, make it mutable,
@@ -71,6 +77,32 @@ impl Subscription {
                 chans.as_ptr(),
             ))
             .ok_or("CFDictionaryCreateMutableCopy failed")?;
+            if !only.is_empty() {
+                let wanted = Cf::from_owned(CFArrayCreateMutable(
+                    std::ptr::null(),
+                    0,
+                    &kCFTypeArrayCallBacks,
+                ))
+                .ok_or("CFArrayCreateMutable failed")?;
+                let mut n = 0;
+                for item in channels
+                    .dict_get("IOReportChannels")
+                    .map(|a| a.array_items())
+                    .unwrap_or_default()
+                {
+                    let name = Cf::from_borrowed(IOReportChannelGetChannelName(item.as_ptr()))
+                        .and_then(|s| s.to_string_lossy());
+                    if name.is_some_and(|n| only.contains(&n.as_str())) {
+                        CFArrayAppendValue(wanted.as_ptr(), item.as_ptr());
+                        n += 1;
+                    }
+                }
+                if n == 0 {
+                    return Err(format!("IOReport channels {only:?} not found in {group:?}"));
+                }
+                let key = Cf::string("IOReportChannels");
+                CFDictionarySetValue(channels.as_ptr(), key.as_ptr(), wanted.as_ptr());
+            }
             let mut subscribed: CFTypeRef = std::ptr::null();
             let sub = Cf::from_owned(IOReportCreateSubscription(
                 std::ptr::null(),

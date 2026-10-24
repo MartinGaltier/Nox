@@ -56,7 +56,11 @@ pub fn interface_counters() -> Result<Vec<IfCounters>, String> {
             let index = m.ifm_index;
             let flags = m.ifm_flags;
             let data = m.ifm_data;
-            if let Some(name) = if_name(u32::from(index)) {
+            // The interface's sockaddr_dl (RTA_IFP) follows the header and
+            // carries its name: no per-interface if_indextoname lookup.
+            let name =
+                link_name(&buf[off + hdr..off + msglen]).or_else(|| if_name(u32::from(index)));
+            if let Some(name) = name {
                 out.push(IfCounters {
                     name,
                     up: flags & libc::IFF_UP != 0,
@@ -69,6 +73,18 @@ pub fn interface_counters() -> Result<Vec<IfCounters>, String> {
         off += msglen;
     }
     Ok(out)
+}
+
+/// Name inside a `sockaddr_dl` (bytes: len, family, index×2, type, nlen,
+/// alen, slen, data…).
+fn link_name(sa: &[u8]) -> Option<String> {
+    if sa.len() < 8 || i32::from(sa[1]) != libc::AF_LINK {
+        return None;
+    }
+    let len = usize::from(sa[0]).min(sa.len());
+    let nlen = usize::from(sa[5]);
+    let name = sa.get(8..8 + nlen).filter(|_| 8 + nlen <= len)?;
+    (!name.is_empty()).then(|| String::from_utf8_lossy(name).into_owned())
 }
 
 fn if_name(index: u32) -> Option<String> {

@@ -10,6 +10,9 @@
 use crate::sys::ioreport::EnergyDelta;
 use nox_core::{Reading, Unavailable};
 
+/// The only "Energy Model" channels Nox subscribes to.
+pub const CHANNELS: [&str; 3] = ["CPU Energy", "GPU Energy", "ANE"];
+
 /// Samples without any movement after which a counter is declared frozen.
 const FROZEN_AFTER: u32 = 2;
 
