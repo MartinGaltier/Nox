@@ -6,11 +6,21 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+# The library holds the wire protocol, the lease/restore logic and the
+# read-only system probes, so the app (nox-power) speaks the same protocol and
+# tests can run the server logic unprivileged with a fake backend.
+[lib]
+name = "nox_helper"
+path = "src/lib.rs"
+
 [[bin]]
 name = "nox-helper"
 path = "src/main.rs"
 
 [dependencies]
+libc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true
