@@ -18,5 +18,5 @@ Branche `agent/metrics`.
 | F10 | Ventilateurs | SMC `FNum`/`F<n>Ac` | Aucune clé `F*` sur ce M2 → `Unavailable(NotSupported)` | testée (Indisponible attendu) |
 | E2 | Alertes batterie interne | `low_battery_alert` → `AlertKind::LowBattery` une fois par franchissement (réarmement à +3 points ou secteur) ; `AlertKind::PowerSource` à chaque changement de source | Tests unitaires (franchissement, hystérésis, désactivé à 0, secteur) ; pas encore observé en réel avec le module en marche | implémentée |
 
-Coût mesuré : 2,49 ms CPU par échantillon, 0,12 % d'un cœur à 2 s (release, 60 s) ;
-≈ 0,025 % à l'intervalle d'arrière-plan de 10 s.
+Coût mesuré : 2,5–4,2 ms CPU par échantillon selon la charge de la machine, 0,12–0,21 %
+d'un cœur à 2 s (release, 60 s, 3 mesures) ; ≈ 0,025–0,04 % à l'intervalle d'arrière-plan de 10 s.

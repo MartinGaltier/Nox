@@ -59,9 +59,13 @@ Principes :
 | initiale (`NET_RT_IFLIST2` + `if_indextoname`, IOReport groupe entier, tous les `Tp*`) | 30 | 125,9 ms | 4,20 ms | 0,21 % d'un cœur |
 | + canaux IOReport filtrés, `Tp*` de repli à la demande | 30 | 85,3 ms | 2,84 ms | 0,14 % d'un cœur |
 | actuelle (+ compteurs réseau ifmib de la seule interface principale) | 30 | 74,7 ms | 2,49 ms | **0,12 %** d'un cœur |
+| actuelle, re-vérification sur target propre (load average 5–6, autres compilations) | 30 | 98,4 ms / 125,3 ms | 3,28 / 4,18 ms | 0,16 % / 0,21 % |
+
+Le coût varie avec la charge de la machine (cache, contention) : **2,5–4,2 ms par échantillon,
+0,12–0,21 % d'un cœur à 2 s**, toujours sous le seuil de 1 % du test.
 
 Mise en route (énumération des 1725 clés SMC, une fois) : ≈ 50–60 ms CPU.
-En arrière-plan (10 s) : ≈ 0,025 % d'un cœur (extrapolé : 2,49 ms / 10 s). Coût par source (`--example profile`, release,
+En arrière-plan (10 s) : ≈ 0,025–0,04 % d'un cœur (extrapolé : 2,5–4,2 ms / 10 s). Coût par source (`--example profile`, release,
 moyenne de 30 appels) : abonnement IOReport 3 canaux ≈ 640 µs, lecture SMC ≈ 19 µs × 21 clés,
 registre batterie (10 propriétés) ≈ 50 µs, IOPS ≈ 32 µs, `PerformanceStatistics` ≈ 29 µs,
 compteurs réseau ≈ 32 µs, interface principale (configd) ≈ 14 µs, `getfsstat` ≈ 7 µs,
@@ -79,7 +83,8 @@ ticks CPU ≈ 7 µs, VM ≈ 1 µs.
   `snapshot_is_plausible` ✔, `module_lifecycle_publishes_and_cleans_up` ✔ (publication,
   intervalle visible appliqué après `MetricsVisible(true)`, `history_len` appliqué sans
   redémarrage, `metrics = None` et plus aucune publication après `stop`),
-  `collector_cost_60s_at_2s` ✔ (0,12 %).
+  `collector_cost_60s_at_2s` ✔ (0,12–0,21 %). Tous relancés le 2026-10-24 ≈ 10:40 sur un
+  dossier de build propre (`target/wt-metrics`) après le merge d'`origin/main`.
 
 ## Limites connues
 
