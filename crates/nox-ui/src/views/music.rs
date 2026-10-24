@@ -464,8 +464,8 @@ mod tests {
                     ],
                     source: "LRCLIB".into(),
                 }),
-                levels: vec![],
-                levels_measured: false,
+                // `levels` and fields added later (e.g. `players`) take defaults.
+                ..Default::default()
             }),
             ..Default::default()
         }
