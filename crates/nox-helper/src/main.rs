@@ -110,6 +110,14 @@ fn serve(allowed_client: Option<PathBuf>) -> ExitCode {
     let policy = ConsolePolicy::new(allowed_client.as_deref());
     let mut server = match Server::bind(std::path::Path::new(SOCKET_PATH), policy) {
         Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            // Permanent until an admin removes the file: do not respawn-loop.
+            // The journal was already replayed above.
+            log_line(&format!(
+                "bind {SOCKET_PATH}: {e}; not serving (remove the file and reinstall)"
+            ));
+            return ExitCode::SUCCESS;
+        }
         Err(e) => {
             log_line(&format!("bind {SOCKET_PATH}: {e}"));
             return ExitCode::FAILURE;

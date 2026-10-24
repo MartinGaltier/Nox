@@ -20,8 +20,10 @@ fn xml_escape(s: &str) -> String {
     out
 }
 
-/// `RunAtLoad` (boot recovery) + `KeepAlive` (relaunched after a crash, which
-/// also runs the journal recovery).
+/// `RunAtLoad` (boot recovery) + `KeepAlive` on unsuccessful exit (relaunched
+/// after a crash, which also runs the journal recovery). The helper exits 0
+/// only on a stop request or a permanent misconfiguration it has logged, so
+/// launchd does not relaunch it every 10 s into the same error.
 pub fn plist(program: &Path, allowed_client: Option<&Path>) -> String {
     let mut args = vec![program.to_string_lossy().into_owned()];
     if let Some(c) = allowed_client {
@@ -45,7 +47,10 @@ pub fn plist(program: &Path, allowed_client: Option<&Path>) -> String {
 	<key>RunAtLoad</key>
 	<true/>
 	<key>KeepAlive</key>
-	<true/>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
 	<key>ThrottleInterval</key>
 	<integer>10</integer>
 	<key>Umask</key>
