@@ -22,10 +22,21 @@ pub enum WatchTrigger {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum WatchPhase {
     Idle,
+    /// The UI shows its region picker; it answers with `Start` or `CancelSelection`.
     Selecting,
     Watching,
+    /// The region moved since the baseline (waiting for it to settle).
     Changing,
     Triggered,
+}
+
+/// Why a watch ended.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WatchOutcome {
+    Changed,
+    Settled,
+    /// Capture stopped working (permission revoked, display gone).
+    Lost,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -39,6 +50,13 @@ pub struct WatchState {
     pub last_change_at: Option<Timestamp>,
     /// 0..1 fraction of pixels changed on the last comparison.
     pub last_diff: Option<f64>,
+    #[serde(default)]
+    pub started_at: Option<Timestamp>,
+    #[serde(default)]
+    pub outcome: Option<WatchOutcome>,
+    /// Last capture error, in French, for the UI.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 impl Default for WatchState {
@@ -51,6 +69,9 @@ impl Default for WatchState {
             trigger: WatchTrigger::Settled,
             last_change_at: None,
             last_diff: None,
+            started_at: None,
+            outcome: None,
+            error: None,
         }
     }
 }
@@ -58,7 +79,15 @@ impl Default for WatchState {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum WatchCommand {
     BeginSelection,
-    Start { region: Rect, trigger: WatchTrigger },
+    /// The picker closed without a region.
+    CancelSelection,
+    Start {
+        region: Rect,
+        trigger: WatchTrigger,
+    },
+    /// Watch the last region again after it triggered.
+    Again,
+    SetTrigger(WatchTrigger),
     Stop,
     RequestAccess,
 }
@@ -70,6 +99,10 @@ pub struct WatchSettings {
     pub settle_secs: u64,
     /// Fraction of changed pixels counted as a change.
     pub sensitivity: f64,
+    /// Play a system sound when the watch triggers.
+    pub sound: bool,
+    /// A change must persist this long before it counts (filters a blinking caret).
+    pub change_confirm_secs: u64,
 }
 
 impl Default for WatchSettings {
@@ -78,6 +111,8 @@ impl Default for WatchSettings {
             interval_ms: 1000,
             settle_secs: 8,
             sensitivity: 0.01,
+            sound: true,
+            change_confirm_secs: 2,
         }
     }
 }
