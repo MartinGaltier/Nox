@@ -32,6 +32,7 @@ pub struct IslandState {
     pub power: Option<PowerState>,
     pub captures: Option<crate::model::captures::CapturesState>,
     pub scratchpad: Option<crate::model::scratchpad::ScratchpadState>,
+    pub clipboard: Option<crate::model::clipboard::ClipboardState>,
 }
 
 type Waker = Box<dyn Fn() + Send + Sync>;

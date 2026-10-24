@@ -30,10 +30,11 @@ pub enum Section {
     Accessories,
     Captures,
     Scratchpad,
+    Clipboard,
 }
 
 impl Section {
-    pub const DEFAULT_ORDER: [Section; 15] = [
+    pub const DEFAULT_ORDER: [Section; 16] = [
         Section::Music,
         Section::Calendar,
         Section::Agents,
@@ -49,6 +50,7 @@ impl Section {
         Section::Shortcuts,
         Section::Captures,
         Section::Scratchpad,
+        Section::Clipboard,
     ];
     pub fn label_fr(self) -> &'static str {
         match self {
@@ -64,6 +66,7 @@ impl Section {
             Section::Shortcuts => "Raccourcis",
             Section::Captures => "Captures",
             Section::Scratchpad => "Bloc-notes",
+            Section::Clipboard => "Presse-papiers",
             Section::System => "Système",
             Section::KeepAwake => "Maintien éveillé",
             Section::Accessories => "Accessoires",
@@ -83,6 +86,7 @@ impl Section {
             Section::Shortcuts => "square.grid.2x2",
             Section::Captures => "photo.on.rectangle",
             Section::Scratchpad => "note.text",
+            Section::Clipboard => "doc.on.clipboard",
             Section::System => "gauge.with.dots.needle.50percent",
             Section::KeepAwake => "cup.and.saucer",
             Section::Accessories => "headphones",
@@ -103,6 +107,7 @@ impl Section {
             Section::Shortcuts => ModuleId::Shortcuts,
             Section::Captures => ModuleId::Captures,
             Section::Scratchpad => ModuleId::Scratchpad,
+            Section::Clipboard => ModuleId::Clipboard,
             Section::System => ModuleId::Metrics,
             Section::KeepAwake => ModuleId::Power,
             Section::Accessories => ModuleId::Accessories,
@@ -229,6 +234,7 @@ pub struct Settings {
     pub downloads: DownloadSettings,
     pub shortcuts: ShortcutSettings,
     pub captures: crate::model::captures::CaptureSettings,
+    pub clipboard: crate::model::clipboard::ClipboardSettings,
     pub camera: CameraSettings,
     pub agents: AgentSettings,
     pub watch: WatchSettings,
@@ -252,6 +258,7 @@ impl Default for Settings {
             downloads: Default::default(),
             shortcuts: Default::default(),
             captures: Default::default(),
+            clipboard: Default::default(),
             camera: Default::default(),
             agents: Default::default(),
             watch: Default::default(),
@@ -269,7 +276,11 @@ impl Settings {
     pub fn default_enabled(id: ModuleId) -> bool {
         !matches!(
             id,
-            ModuleId::Camera | ModuleId::Watch | ModuleId::Notifications | ModuleId::Captures
+            ModuleId::Camera
+                | ModuleId::Watch
+                | ModuleId::Notifications
+                | ModuleId::Captures
+                | ModuleId::Clipboard
         )
     }
     pub fn module_enabled(&self, id: ModuleId) -> bool {
