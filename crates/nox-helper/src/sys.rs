@@ -303,7 +303,8 @@ pub fn power_source() -> Option<PowerSourceInfo> {
                     && max > 0
                     && cur >= 0
                 {
-                    battery_percent = Some(((cur * 100 + max / 2) / max).clamp(0, 100) as u8);
+                    let pct = cur.saturating_mul(100).saturating_add(max / 2) / max;
+                    battery_percent = Some(pct.clamp(0, 100) as u8);
                 }
             }
         }
