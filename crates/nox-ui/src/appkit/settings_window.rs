@@ -5,7 +5,8 @@
 use super::app::{self, App};
 use super::login::{self, LoginStatus};
 use super::util::ActionTarget;
-use nox_core::model::agents::AgentProvider;
+use nox_core::model::agents::{AgentPeriod, AgentProvider};
+use nox_core::model::companion::CompanionSide;
 use nox_core::model::power::{KeepAwakeDuration, KeepAwakeMode, PowerCommand};
 use nox_core::settings::{DisplayChoice, IdleContent, IslandSilhouette, IslandSize};
 use nox_core::{Command, ModuleId, Section, Settings};
@@ -538,6 +539,37 @@ fn sections(
         |s| s.companion.character.clone(),
         |s, v| s.companion.character = v,
     );
+    f.popup(
+        "Couleur",
+        [
+            ("Nacre", "pearl"),
+            ("Citron", "lemon"),
+            ("Pêche", "peach"),
+            ("Rose", "rose"),
+            ("Lilas", "lilac"),
+            ("Ciel", "sky"),
+            ("Menthe", "mint"),
+        ]
+        .into_iter()
+        .map(|(l, v)| (l.to_string(), v.to_string()))
+        .collect(),
+        |s| s.companion.palette.clone(),
+        |s, v| s.companion.palette = v,
+    );
+    f.popup(
+        "Côté",
+        vec![
+            ("Gauche de l’encoche".into(), CompanionSide::Left),
+            ("Droite de l’encoche".into(), CompanionSide::Right),
+        ],
+        |s| s.companion.side,
+        |s, v| s.companion.side = v,
+    );
+    f.checkbox(
+        "Réactions aux événements",
+        |s| s.companion.reactions,
+        |s, v| s.companion.reactions = v,
+    );
     f.view(t)
 }
 
@@ -559,6 +591,21 @@ fn content(
         |s| s.music.visualizer,
         |s, v| s.music.visualizer = v,
     );
+    f.checkbox(
+        "Chercher les paroles en ligne (envoie titre et artiste à lrclib.net)",
+        |s| s.music.lyrics_online,
+        |s, v| s.music.lyrics_online = v,
+    );
+    f.checkbox(
+        "Inclure les autres lecteurs (navigateurs…)",
+        |s| s.music.include_other_players,
+        |s, v| s.music.include_other_players = v,
+    );
+    f.checkbox(
+        "Alerte au changement de morceau",
+        |s| s.music.track_change_alert,
+        |s, v| s.music.track_change_alert = v,
+    );
     f.header("Calendrier");
     f.popup(
         "Jours affichés",
@@ -577,6 +624,24 @@ fn content(
         |s| s.calendar.show_reminders,
         |s, v| s.calendar.show_reminders = v,
     );
+    // One switch per calendar known to the module (hidden by identifier).
+    let calendars = app::get()
+        .and_then(|a| a.state().calendar.map(|c| c.calendars))
+        .unwrap_or_default();
+    for cal in calendars {
+        let id = cal.id.clone();
+        let id2 = cal.id.clone();
+        f.checkbox(
+            &format!("Afficher « {} » ({})", cal.title, cal.source),
+            move |s| !s.calendar.hidden_calendars.contains(&id),
+            move |s, on| {
+                s.calendar.hidden_calendars.retain(|h| *h != id2);
+                if !on {
+                    s.calendar.hidden_calendars.push(id2.clone());
+                }
+            },
+        );
+    }
     f.header("Notifications");
     f.popup(
         "Nombre maximal",
@@ -589,6 +654,15 @@ fn content(
         |s| s.notifications.hide_body,
         |s, v| s.notifications.hide_body = v,
     );
+    f.view(t)
+}
+
+fn activities(
+    mtm: MainThreadMarker,
+    s: &Settings,
+    t: &mut Vec<Retained<ActionTarget>>,
+) -> Retained<NSView> {
+    let mut f = Form::new(mtm, s.clone());
     f.header("Minuteurs");
     f.popup(
         "Concentration",
@@ -613,6 +687,17 @@ fn content(
         num_options(&[2u32, 3, 4, 6, 8], ""),
         |s| s.timers.focus_rounds,
         |s, v| s.timers.focus_rounds = v,
+    );
+    f.popup(
+        "Pause longue toutes les",
+        num_options(&[2u32, 3, 4, 6], " sessions"),
+        |s| s.timers.focus_long_break_every,
+        |s, v| s.timers.focus_long_break_every = v,
+    );
+    f.checkbox(
+        "Enchaîner les phases automatiquement",
+        |s| s.timers.focus_auto_advance,
+        |s, v| s.timers.focus_auto_advance = v,
     );
     f.checkbox(
         "Son à la fin",
@@ -659,6 +744,50 @@ fn agents(
         |s| s.agents.finish_alert_min_secs,
         |s, v| s.agents.finish_alert_min_secs = v,
     );
+    f.checkbox(
+        "Alerte quand une tâche se termine",
+        |s| s.agents.finish_alert,
+        |s, v| s.agents.finish_alert = v,
+    );
+    f.checkbox(
+        "Alerte quand un agent attend une réponse",
+        |s| s.agents.needs_input_alert,
+        |s, v| s.agents.needs_input_alert = v,
+    );
+    f.checkbox(
+        "Alerte à l’approche d’une limite",
+        |s| s.agents.limit_alert,
+        |s, v| s.agents.limit_alert = v,
+    );
+    f.popup(
+        "Seuil d’alerte de limite",
+        num_options(&[50.0, 75.0, 90.0, 95.0], " %"),
+        |s| s.agents.limit_threshold_percent,
+        |s, v| s.agents.limit_threshold_percent = v,
+    );
+    f.popup(
+        "Budget quotidien (estimé)",
+        vec![
+            ("Aucun".into(), 0.0),
+            ("5 $".into(), 5.0),
+            ("10 $".into(), 10.0),
+            ("25 $".into(), 25.0),
+            ("50 $".into(), 50.0),
+            ("100 $".into(), 100.0),
+        ],
+        |s| s.agents.daily_budget_usd,
+        |s, v| s.agents.daily_budget_usd = v,
+    );
+    f.popup(
+        "Période des totaux",
+        vec![
+            (AgentPeriod::Today.label_fr().into(), AgentPeriod::Today),
+            (AgentPeriod::Week.label_fr().into(), AgentPeriod::Week),
+            (AgentPeriod::Month.label_fr().into(), AgentPeriod::Month),
+        ],
+        |s| s.agents.period,
+        |s, v| s.agents.period = v,
+    );
     f.header("Limites des forfaits");
     f.checkbox(
         "Lire les limites (5 h, semaine) auprès des fournisseurs",
@@ -688,6 +817,11 @@ fn agents(
         ],
         |s| s.watch.sensitivity,
         |s, v| s.watch.sensitivity = v,
+    );
+    f.checkbox(
+        "Son lors d’une alerte",
+        |s| s.watch.sound,
+        |s, v| s.watch.sound = v,
     );
     f.view(t)
 }
@@ -794,10 +928,11 @@ fn build(
 ) -> (Retained<NSTabView>, Vec<Retained<ActionTarget>>) {
     let tabs = NSTabView::new(mtm);
     let mut targets = vec![];
-    let pages: [(&str, PageBuilder); 5] = [
+    let pages: [(&str, PageBuilder); 6] = [
         ("Général", general),
         ("Sections", sections),
         ("Contenus", content),
+        ("Activités", activities),
         ("Agents & surveillance", agents),
         ("Système & énergie", system),
     ];

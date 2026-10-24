@@ -179,12 +179,12 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                         Some(u) if u >= 70.0 => Color::ORANGE,
                         _ => Color::ACCENT,
                     };
-                    bar(
-                        s,
-                        Rect::new(bar_r.x, bar_r.mid_y() - 2.5, bar_r.w, 5.0),
-                        used.map(|u| u / 100.0),
-                        color,
-                    );
+                    let track = Rect::new(bar_r.x, bar_r.mid_y() - 2.5, bar_r.w, 5.0);
+                    match used {
+                        Some(u) => bar(s, track, Some(u / 100.0), color),
+                        // Unknown: an empty track, not an activity pattern.
+                        None => s.fill(track, 2.5, Color::TRACK),
+                    }
                     // A window whose reset passed but has no new sample is
                     // unknown: "…", never 0 %.
                     let reset_passed = l.resets_at.is_some_and(|r| r <= cx.now);
