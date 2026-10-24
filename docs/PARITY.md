@@ -87,8 +87,8 @@ Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE
 | E8 | HUD volume/luminosité dans l'îlot | `NotchVolumeKeyGate` | — | AX (event tap) | À évaluer | — | à faire (évalué) |
 | E9 | Mixeur par app | section `mixer` | — | process taps CoreAudio | hors priorité (utilitaire séparé) | — | à faire (évalué : capture audio) |
 | E10 | Presse-papiers dans l'îlot | section `clipboard` | — | — | Historique local | — | à faire (évalué) |
-| E11 | Captures récentes | section `captures` | — | — | Dossier captures | — | à faire (évalué) |
-| E12 | Bloc-notes | section `scratchpad` | — | — | Fichier local | — | à faire (évalué) |
+| E11 | Captures récentes | section `captures` | — | — | Dossier captures | — | implémentée (fixtures ; vraie capture non testée, module désactivé par défaut) |
+| E12 | Bloc-notes | section `scratchpad` | — | — | Fichier local | — | implémentée (testée sur fichier temporaire) |
 
 ## F. Moniteur système (îlot + fenêtre)
 
