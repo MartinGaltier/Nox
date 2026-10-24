@@ -387,6 +387,17 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, section: Section) {
         Section::Watch => tools::watch(s, cx, r, enabled),
         Section::Camera => tools::camera(s, cx, r, enabled),
         Section::Shortcuts => tools::shortcuts(s, cx, r, enabled),
+        // Rendered by Agent Interface in a follow-up; say so honestly.
+        Section::Captures | Section::Scratchpad | Section::Clipboard if !enabled => {
+            module_missing(s, r, section, enabled)
+        }
+        Section::Captures | Section::Scratchpad | Section::Clipboard => empty(
+            s,
+            r,
+            section.symbol(),
+            section.label_fr(),
+            "En attente : affichage de cette section pas encore disponible dans cette version.",
+        ),
     }
 }
 
