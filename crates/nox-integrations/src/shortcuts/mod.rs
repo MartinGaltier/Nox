@@ -2,10 +2,13 @@
 //! saver, empty Trash (Finder, Automation), open app/URL, run a Shortcut.
 //! Every external process is one-shot, on demand, bounded and killed on stop.
 
-use crate::sys::{applescript, system, workspace};
+use crate::sys::audio::{self, Dir};
+use crate::sys::{applescript, display, system, workspace};
 use crossbeam_channel::{Receiver, Sender, select, unbounded};
-use nox_core::model::shortcuts::{QuickAction, ShortcutCommand, ShortcutsState};
-use nox_core::{CancelToken, Hub, Module, ModuleContext, ModuleError, ModuleId, Worker};
+use nox_core::model::shortcuts::{ControlsState, QuickAction, ShortcutCommand, ShortcutsState};
+use nox_core::{
+    CancelToken, Hub, Module, ModuleContext, ModuleError, ModuleId, Reading, Unavailable, Worker,
+};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -187,9 +190,67 @@ fn publish(hub: &Hub, state: &ShortcutsState) {
     });
 }
 
+/// Reads every control; a control the device does not expose is reported
+/// as not supported, never as 0.
+pub fn read_controls() -> ControlsState {
+    fn na<T>() -> Reading<T> {
+        Reading::Unavailable(Unavailable::NotSupported)
+    }
+    let out = audio::default_device(Dir::Output);
+    let inp = audio::default_device(Dir::Input);
+    ControlsState {
+        volume: out
+            .and_then(audio::volume)
+            .map(Reading::Measured)
+            .unwrap_or_else(na),
+        muted: out
+            .and_then(|d| audio::muted(d, Dir::Output))
+            .map(Reading::Measured)
+            .unwrap_or_else(na),
+        mic_muted: inp
+            .and_then(|d| audio::muted(d, Dir::Input))
+            .map(Reading::Measured)
+            .unwrap_or_else(na),
+        brightness: display::brightness()
+            .map(Reading::Measured)
+            .unwrap_or_else(na),
+        output_device: out.and_then(audio::device_name),
+        input_device: inp.and_then(audio::device_name),
+    }
+}
+
+fn set_control(c: &ShortcutCommand) -> Result<(), String> {
+    let ok =
+        match *c {
+            ShortcutCommand::SetVolume(v) if v.is_finite() => {
+                audio::default_device(Dir::Output).is_some_and(|d| audio::set_volume(d, v))
+            }
+            ShortcutCommand::SetMuted(m) => audio::default_device(Dir::Output)
+                .is_some_and(|d| audio::set_muted(d, Dir::Output, m)),
+            ShortcutCommand::SetMicMuted(m) => audio::default_device(Dir::Input)
+                .is_some_and(|d| audio::set_muted(d, Dir::Input, m)),
+            ShortcutCommand::SetBrightness(v) if v.is_finite() => display::set_brightness(v),
+            _ => false,
+        };
+    ok.then_some(())
+        .ok_or_else(|| "réglage non pris en charge par cet appareil".to_owned())
+}
+
 fn run(hub: Hub, rx: Receiver<ShortcutCommand>, token: CancelToken) {
-    let mut state = ShortcutsState::default();
+    let mut state = ShortcutsState {
+        controls: read_controls(),
+        ..Default::default()
+    };
     publish(&hub, &state);
+    let (audio_tx, audio_rx) = crossbeam_channel::bounded(1);
+    let mut listeners = Some(audio::Listeners::new(audio_tx.clone()));
+    let devices = || {
+        (
+            audio::default_device(Dir::Output),
+            audio::default_device(Dir::Input),
+        )
+    };
+    let mut current = devices();
     while !token.is_cancelled() {
         select! {
             recv(rx) -> c => match c {
@@ -206,11 +267,41 @@ fn run(hub: Hub, rx: Receiver<ShortcutCommand>, token: CancelToken) {
                     }
                     publish(&hub, &state);
                 }
+                Ok(ShortcutCommand::RefreshControls) => {
+                    state.controls = read_controls();
+                    publish(&hub, &state);
+                }
+                Ok(c) => {
+                    if let Err(e) = set_control(&c) {
+                        state.last_result = Some(Err(e));
+                    }
+                    state.controls = read_controls();
+                    publish(&hub, &state);
+                }
                 Err(_) => break,
+            },
+            recv(audio_rx) -> _ => {
+                // Coalesce the burst a device switch produces.
+                std::thread::sleep(Duration::from_millis(50));
+                let now = devices();
+                if now != current {
+                    current = now;
+                    // Unregister the old device before listening to the new one.
+                    drop(listeners.take());
+                    listeners = Some(audio::Listeners::new(audio_tx.clone()));
+                }
+                let c = read_controls();
+                state.controls.volume = c.volume;
+                state.controls.muted = c.muted;
+                state.controls.mic_muted = c.mic_muted;
+                state.controls.output_device = c.output_device;
+                state.controls.input_device = c.input_device;
+                publish(&hub, &state);
             },
             default(Duration::from_millis(500)) => {},
         }
     }
+    drop(listeners);
     hub.update(|s| s.shortcuts = None);
 }
 
@@ -268,5 +359,26 @@ mod tests {
             r.as_ref().map(|o| parse_list(o).len())
         );
         assert!(r.is_ok());
+    }
+
+    #[test]
+    #[ignore = "real machine: reads controls and re-applies the current volume (no audible change)"]
+    fn live_controls() {
+        let c = read_controls();
+        eprintln!(
+            "volume {:?} muted {:?} mic_muted {:?} brightness {:?} out {:?}",
+            c.volume,
+            c.muted,
+            c.mic_muted,
+            c.brightness,
+            c.output_device.is_some()
+        );
+        if let (Some(d), Some(v)) = (
+            audio::default_device(Dir::Output),
+            c.volume.value().copied(),
+        ) {
+            assert!(audio::set_volume(d, v), "setting the same volume succeeds");
+            assert!((audio::volume(d).unwrap() - v).abs() < 0.01);
+        }
     }
 }

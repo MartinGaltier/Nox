@@ -2,8 +2,10 @@
 //! Public functions here are safe; each unsafe block carries a SAFETY note.
 
 pub mod applescript;
+pub mod audio;
 pub mod avcapture;
 pub mod ax;
+pub mod display;
 pub mod eventkit;
 pub mod fsevents;
 pub mod http;
