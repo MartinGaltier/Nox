@@ -266,14 +266,32 @@ impl App {
                 s.backingScaleFactor(),
             )
         });
-        let text = format!(
-            "raw NSScreen (frame, safeAreaInsets, auxLeft, auxRight, scale): {raw:#?}\n\
-             geometry: {:#?}\npanel frame: {:?}\nshape size: {:?}\nsurface: {:?}\n",
-            i.model.geometry,
-            super::util::rect(self.panel.frame()),
-            i.model.size(),
-            i.model.surface,
+        let app = objc2_app_kit::NSApplication::sharedApplication(self.mtm);
+        let focus = format!(
+            "panel: canBecomeKey={} canBecomeMain={} isKey={} nonactivating={} level={} \
+             behavior={:?} sharing={:?} ignoresMouse={} | app active={} policy={:?}\n",
+            self.panel.canBecomeKeyWindow(),
+            self.panel.canBecomeMainWindow(),
+            self.panel.isKeyWindow(),
+            self.panel
+                .styleMask()
+                .contains(objc2_app_kit::NSWindowStyleMask::NonactivatingPanel),
+            self.panel.level(),
+            self.panel.collectionBehavior(),
+            self.panel.sharingType(),
+            self.panel.ignoresMouseEvents(),
+            app.isActive(),
+            app.activationPolicy(),
         );
+        let text = focus
+            + &format!(
+                "raw NSScreen (frame, safeAreaInsets, auxLeft, auxRight, scale): {raw:#?}\n\
+             geometry: {:#?}\npanel frame: {:?}\nshape size: {:?}\nsurface: {:?}\n",
+                i.model.geometry,
+                super::util::rect(self.panel.frame()),
+                i.model.size(),
+                i.model.surface,
+            );
         let _ = std::fs::write(path, text);
     }
 
