@@ -5,8 +5,12 @@
 //! - `SleepDisabled` is only set to 1 after a journal recording the original
 //!   0 is durably on disk; the journal is only removed once 0 is back, or once
 //!   the setting is found changed by someone else.
-//! - Nox never writes when the original value was already 1, and never writes
-//!   0 over a value it did not set (re-read before restoring).
+//! - Nox never writes when the original value was already 1, and re-reads
+//!   before restoring: a 0 set by someone else is left alone and ends the
+//!   lease. (A 1 set by the user *during* a Nox lease is indistinguishable
+//!   from Nox's own and is restored to 0 — documented limit.)
+//! - The battery guard has a floor ([`BATTERY_FLOOR`]) the client cannot
+//!   lower, so even a client asking for threshold 0 is bounded.
 //! - Without a live, heartbeating client the setting is restored after the
 //!   lease (grace) — the app's destructors are never relied upon.
 
@@ -25,6 +29,8 @@ pub type ClientId = u64;
 pub const GUARD_INTERVAL: Duration = Duration::from_secs(10);
 /// Retry period for a restore that failed (journal kept).
 pub const RETRY_INTERVAL: Duration = Duration::from_secs(30);
+/// Minimum battery guard, whatever the client asks (percent, on battery).
+pub const BATTERY_FLOOR: u8 = 5;
 
 #[derive(Debug)]
 struct Lease {
@@ -49,6 +55,9 @@ pub struct HelperCore<B: SleepBackend> {
     journal: JournalStore,
     lease: Option<Lease>,
     revoked: Option<RevokeReason>,
+    /// Earliest time of the next restore retry for a kept journal (failed
+    /// pmset): retries are paced, not run on every request.
+    next_retry: Option<Instant>,
 }
 
 impl<B: SleepBackend> HelperCore<B> {
@@ -58,6 +67,7 @@ impl<B: SleepBackend> HelperCore<B> {
             journal,
             lease: None,
             revoked: None,
+            next_retry: None,
         }
     }
 
@@ -124,6 +134,9 @@ impl<B: SleepBackend> HelperCore<B> {
                     let o = self.restore_lease();
                     self.lease = None;
                     self.revoked = None;
+                    if o == RestoreOutcome::Failed {
+                        self.next_retry = Some(now + RETRY_INTERVAL);
+                    }
                     log_line(&format!("released by client: {}", o.as_str()));
                     Response::Released(o)
                 }
@@ -141,6 +154,7 @@ impl<B: SleepBackend> HelperCore<B> {
         min_battery: u8,
         now: Instant,
     ) -> Response {
+        let min_battery = min_battery.max(BATTERY_FLOOR);
         if let Some(p) = self.backend.power_source()
             && p.below(min_battery)
         {
@@ -259,21 +273,34 @@ impl<B: SleepBackend> HelperCore<B> {
             if let Some(r) = reason {
                 let o = self.end_lease(r);
                 log_line(&format!("lease revoked ({}): {}", r.as_str(), o.as_str()));
+                if o == RestoreOutcome::Failed {
+                    self.next_retry = Some(now + RETRY_INTERVAL);
+                }
             }
-        } else if !matches!(self.journal.load(), Loaded::Absent) {
+            if let Some(l) = &self.lease {
+                return Some(
+                    l.deadline()
+                        .saturating_duration_since(now)
+                        .min(GUARD_INTERVAL),
+                );
+            }
+        }
+        // No lease: a journal left means a restore that failed earlier.
+        if matches!(self.journal.load(), Loaded::Absent) {
+            self.next_retry = None;
+            return None;
+        }
+        let due = *self.next_retry.get_or_insert(now);
+        if now >= due {
             let o = self.restore_journal();
             log_line(&format!("restore retry: {}", o.as_str()));
+            if o != RestoreOutcome::Failed {
+                self.next_retry = None;
+                return None;
+            }
+            self.next_retry = Some(now + RETRY_INTERVAL);
         }
-
-        match &self.lease {
-            Some(l) => Some(
-                l.deadline()
-                    .saturating_duration_since(now)
-                    .min(GUARD_INTERVAL),
-            ),
-            None if !matches!(self.journal.load(), Loaded::Absent) => Some(RETRY_INTERVAL),
-            None => None,
-        }
+        self.next_retry.map(|t| t.saturating_duration_since(now))
     }
 
     fn end_lease(&mut self, reason: RevokeReason) -> RestoreOutcome {
@@ -568,6 +595,63 @@ mod tests {
     }
 
     #[test]
+    fn battery_floor_cannot_be_disabled_by_the_client() {
+        let mut t = setup("floor");
+        t.fake.with(|s| {
+            s.power = Some(PowerSourceInfo {
+                on_battery: true,
+                battery_percent: Some(BATTERY_FLOOR),
+            })
+        });
+        assert!(matches!(
+            t.core.handle(1, UID, acquire(60, 0), t.t0),
+            Response::Err {
+                code: ErrorCode::Battery,
+                ..
+            }
+        ));
+        t.fake.with(|s| {
+            s.power = Some(PowerSourceInfo {
+                on_battery: true,
+                battery_percent: Some(BATTERY_FLOOR + 1),
+            })
+        });
+        t.core.handle(1, UID, acquire(60, 0), t.t0);
+        t.fake.with(|s| {
+            s.power = Some(PowerSourceInfo {
+                on_battery: true,
+                battery_percent: Some(BATTERY_FLOOR),
+            })
+        });
+        t.core.tick(t.t0 + secs(10));
+        assert_eq!(t.fake.with(|s| s.sleep_disabled), Some(false));
+    }
+
+    #[test]
+    fn restore_retries_are_paced() {
+        let mut t = setup("paced");
+        t.core.handle(1, UID, acquire(60, 0), t.t0);
+        t.fake.with(|s| s.fail_writes = true);
+        t.core.handle(1, UID, Request::Release, t.t0);
+        let attempts = || t.fake.with(|s| s.failed_writes);
+        let before = attempts();
+        for i in 0..20 {
+            // Requests wake the loop often; pmset must not run each time.
+            t.core.handle(
+                2,
+                UID,
+                Request::Status,
+                t.t0 + Duration::from_millis(i * 100),
+            );
+            t.core.tick(t.t0 + Duration::from_millis(i * 100));
+        }
+        assert_eq!(attempts() - before, 0, "no retry before RETRY_INTERVAL");
+        t.core.tick(t.t0 + RETRY_INTERVAL);
+        t.core.tick(t.t0 + RETRY_INTERVAL + secs(1));
+        assert_eq!(t.fake.with(|s| s.failed_writes) - before, 1);
+    }
+
+    #[test]
     fn thermal_guard_revokes() {
         let mut t = setup("thermal");
         t.core.handle(1, UID, acquire(60, 0), t.t0);
@@ -593,7 +677,11 @@ mod tests {
             Response::Released(RestoreOutcome::Failed)
         );
         assert!(matches!(t.store.load(), Loaded::Present(_)));
-        assert_eq!(t.core.tick(t.t0 + secs(1)), Some(RETRY_INTERVAL));
+        assert!(
+            t.core
+                .tick(t.t0 + secs(1))
+                .is_some_and(|d| d <= RETRY_INTERVAL)
+        );
         t.fake.with(|s| s.fail_writes = false);
         assert_eq!(t.core.tick(t.t0 + secs(31)), None);
         assert_eq!(t.fake.with(|s| s.sleep_disabled), Some(false));

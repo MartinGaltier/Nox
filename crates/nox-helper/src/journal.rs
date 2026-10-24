@@ -74,18 +74,27 @@ impl JournalStore {
 
     /// Durable write: the record must survive a power cut right after the
     /// `pmset` call that follows.
+    ///
+    /// Defence in depth for a root writer: the directory must belong to this
+    /// uid and not be writable by group/other, and the temporary file is
+    /// created fresh without following symlinks.
     pub fn store(&self, j: &Journal) -> std::io::Result<()> {
         let bytes = serde_json::to_vec_pretty(j).map_err(std::io::Error::other)?;
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent)?;
+            check_private_dir(parent)?;
         }
         let tmp = self.path.with_extension("tmp");
+        match std::fs::remove_file(&tmp) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         {
             let mut f = std::fs::OpenOptions::new()
                 .write(true)
-                .create(true)
-                .truncate(true)
+                .create_new(true)
                 .mode(0o600)
+                .custom_flags(libc::O_NOFOLLOW)
                 .open(&tmp)?;
             f.write_all(&bytes)?;
             f.sync_all()?;
@@ -107,6 +116,22 @@ impl JournalStore {
     }
 }
 
+fn check_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+    let m = std::fs::symlink_metadata(dir)?;
+    if !m.is_dir() || m.uid() != crate::sys::euid() || m.mode() & 0o022 != 0 {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            format!(
+                "{} must be a directory owned by uid {} and not group/other-writable",
+                dir.display(),
+                crate::sys::euid()
+            ),
+        ));
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -118,7 +143,7 @@ mod tests {
         assert_eq!(store.load(), Loaded::Absent);
         let j = Journal::new(501);
         store.store(&j).unwrap();
-        assert_eq!(store.load(), Loaded::Present(j));
+        assert_eq!(store.load(), Loaded::Present(j.clone()));
         use std::os::unix::fs::PermissionsExt;
         let mode = std::fs::metadata(store.path())
             .unwrap()
@@ -127,6 +152,16 @@ mod tests {
         assert_eq!(mode & 0o777, 0o600);
         std::fs::write(store.path(), b"{garbage").unwrap();
         assert_eq!(store.load(), Loaded::Corrupt);
+        // A planted symlink at the temp path is replaced, not followed.
+        let victim = dir.join("victim");
+        std::fs::write(&victim, b"keep").unwrap();
+        std::os::unix::fs::symlink(&victim, store.path().with_extension("tmp")).unwrap();
+        store.store(&j).unwrap();
+        assert_eq!(std::fs::read(&victim).unwrap(), b"keep");
+        // A group/other-writable directory is refused.
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o777)).unwrap();
+        assert!(store.store(&j).is_err());
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o755)).unwrap();
         store.clear().unwrap();
         store.clear().unwrap();
         assert_eq!(store.load(), Loaded::Absent);
