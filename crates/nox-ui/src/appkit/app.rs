@@ -91,6 +91,8 @@ struct Inner {
     screen_id: Option<u32>,
     artwork: HashMap<u64, Arc<Vec<u8>>>,
     seek_drag: Option<(f64, f64, f64)>,
+    /// Region selection asked; the overlay opens once watch reports Selecting.
+    pending_selection: Option<nox_core::model::watch::WatchTrigger>,
     dragging_files: bool,
 }
 
@@ -175,6 +177,7 @@ impl App {
                 screen_id: screen.as_deref().and_then(screens::display_id),
                 artwork: HashMap::new(),
                 seek_drag: None,
+                pending_selection: None,
                 dragging_files: false,
             }),
             panel,
@@ -323,6 +326,7 @@ impl App {
             let settings = i.settings.clone();
             i.model.push_alerts(alerts, &settings, mono());
         }
+        self.sync_watch();
         self.update();
         if let Some(s) = self.status.borrow().as_ref() {
             s.refresh_icon(&self.inner.borrow().state);
@@ -504,13 +508,18 @@ impl App {
         if !changed {
             return;
         }
-        let attached = super::camera::set_visible(&self.view, on);
-        self.inner.borrow_mut().model.camera_attached = attached;
-        self.hub.send(Command::Camera(if on {
-            nox_core::model::camera::CameraCommand::Start
+        use nox_core::model::camera::CameraCommand;
+        if on {
+            // Host first, then Start (camera contract).
+            let attached = super::camera::set_visible(&self.view, true);
+            self.inner.borrow_mut().model.camera_attached = attached;
+            self.hub.send(Command::Camera(CameraCommand::Start));
         } else {
-            nox_core::model::camera::CameraCommand::Stop
-        }));
+            // Stop first (indicator off), then detach and release the host.
+            self.hub.send(Command::Camera(CameraCommand::Stop));
+            super::camera::set_visible(&self.view, false);
+            self.inner.borrow_mut().model.camera_attached = false;
+        }
     }
 
     // ---------- drawing ----------
@@ -748,9 +757,12 @@ impl App {
             Action::OpenMonitor => super::monitor_window::show(self),
             Action::InstallHelper => super::alerts::install_helper(self),
             Action::BeginWatchSelection(trigger) => {
+                self.hub
+                    .send(Command::Watch(WatchCommand::SetTrigger(trigger)));
                 self.hub.send(Command::Watch(WatchCommand::BeginSelection));
-                self.inner.borrow_mut().model.machine.close(mono());
-                super::overlay::begin(self, trigger);
+                let mut i = self.inner.borrow_mut();
+                i.pending_selection = Some(trigger);
+                i.model.machine.close(mono());
             }
             Action::OpenUrl(u) => files::open_url(&u),
             Action::PickFiles => {
@@ -875,6 +887,35 @@ impl App {
             }
             self.update();
         }
+    }
+
+    /// Opens the selection overlay when the watch module is ready for it, and
+    /// keeps the island out of its captures while a region is watched.
+    fn sync_watch(&self) {
+        use nox_core::model::watch::WatchPhase;
+        let (phase, denied, pending) = {
+            let i = self.inner.borrow();
+            let w = i.state.watch.as_ref();
+            (
+                w.map(|w| w.phase),
+                w.is_some_and(|w| w.error.is_some() && w.phase == WatchPhase::Idle),
+                i.pending_selection,
+            )
+        };
+        if let Some(trigger) = pending {
+            if phase == Some(WatchPhase::Selecting) && self.overlay.borrow().is_none() {
+                self.inner.borrow_mut().pending_selection = None;
+                super::overlay::begin(self, trigger);
+            } else if denied || phase.is_none() {
+                // Refused (permission) or module stopped: the page explains.
+                self.inner.borrow_mut().pending_selection = None;
+            }
+        }
+        let watching = matches!(
+            phase,
+            Some(WatchPhase::Watching | WatchPhase::Changing | WatchPhase::Selecting)
+        );
+        self.set_capture_exclusion(watching);
     }
 
     /// Excludes the island from captures while a region is watched.

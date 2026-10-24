@@ -6,7 +6,8 @@ use crate::format;
 use crate::geom::{Color, Rect};
 use crate::scene::{Action, Align, MusicPanel, Op, Scene, Weight};
 use nox_core::model::music::{LyricLine, MusicCommand, NowPlaying, RepeatMode};
-use nox_core::{Command, Reading, Section};
+use nox_core::permissions::PermissionState;
+use nox_core::{Command, Reading, Section, Unavailable};
 
 /// Index of the active synced lyric line at `t`.
 pub fn active_line(lines: &[LyricLine], t: f64) -> Option<usize> {
@@ -70,13 +71,29 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         return module_missing(s, r, Section::Music, enabled);
     };
     let Some(np) = m.now_playing.as_ref() else {
-        return empty(
-            s,
-            r,
-            "music.note",
-            "Rien en lecture",
-            "Lancez Musique, Spotify ou une vidéo dans le navigateur.",
-        );
+        return match &m.unavailable {
+            Some(Unavailable::Pending) => empty(
+                s,
+                r,
+                "music.note",
+                "Connexion au lecteur…",
+                "Lecture en cours détectée dans un instant.",
+            ),
+            Some(u) => empty(
+                s,
+                r,
+                "music.note",
+                "Lecture en cours indisponible",
+                &format::unavailable(u),
+            ),
+            None => empty(
+                s,
+                r,
+                "music.note",
+                "Rien en lecture",
+                "Lancez Musique, Spotify ou une vidéo dans le navigateur.",
+            ),
+        };
     };
     let ms = &cx.settings.music;
     let side_panel = (ms.lyrics || ms.queue) && r.w >= 420.0;
@@ -258,6 +275,23 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         }
     }
 
+    // Shuffle, repeat and the queue need Automation for the player.
+    let needs_automation = (np.shuffle.is_some() || np.repeat.is_some() || ms.queue)
+        && matches!(
+            m.automation,
+            PermissionState::NotDetermined | PermissionState::Denied
+        );
+    if needs_automation {
+        pill(
+            s,
+            cx,
+            Rect::new(main.mid_x() - 110.0, row.max_y() + 8.0, 220.0, 20.0),
+            "Autoriser l’automatisation du lecteur…",
+            false,
+            Action::Send(Command::Music(MusicCommand::RequestAutomation)),
+        );
+    }
+
     if side_panel {
         side_view(s, cx, side, m, t);
     }
@@ -333,6 +367,11 @@ fn side_view(s: &mut Scene, cx: &Ctx, r: Rect, m: &nox_core::model::music::Music
                     tertiary(8.5).align(Align::Right),
                 );
             }
+            Reading::Unavailable(Unavailable::Disabled) => s.text(
+                inner,
+                "Paroles en ligne désactivées. Activez-les dans Réglages › Contenus (titre et artiste sont alors envoyés à lrclib.net).",
+                tertiary(11.0).lines(5),
+            ),
             Reading::Unavailable(u) => s.text(
                 inner,
                 format!("Paroles : {}", format::unavailable(u)),

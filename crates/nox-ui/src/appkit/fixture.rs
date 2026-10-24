@@ -66,7 +66,10 @@ pub fn overlay(s: &mut IslandState, now: f64) {
             calendars: vec![],
             access: PermissionState::Granted,
             events: vec![CalendarEvent {
-                call: None,
+                call: Some(nox_core::model::calendar::VideoCall {
+                    service: nox_core::model::calendar::CallService::Meet,
+                    url: "https://meet.example/x".into(),
+                }),
                 id: "p1".into(),
                 title: format!("{TAG} Réunion d’exemple"),
                 start: now + 25.0 * 60.0,

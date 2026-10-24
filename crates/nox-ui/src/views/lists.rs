@@ -11,7 +11,7 @@ use nox_core::model::accessories::AccessoryKind;
 use nox_core::model::downloads::{DownloadCommand, DownloadStatus};
 use nox_core::model::files::FileCommand;
 use nox_core::model::notifications::NotificationCommand;
-use nox_core::permissions::Permission;
+use nox_core::permissions::{Permission, PermissionState};
 use nox_core::{Command, Reading, Section};
 
 pub fn notifications(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
@@ -131,6 +131,30 @@ pub fn downloads(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     let Some(d) = cx.state.downloads.as_ref() else {
         return module_missing(s, r, Section::Downloads, enabled);
     };
+    if matches!(
+        d.access,
+        PermissionState::Denied | PermissionState::Restricted
+    ) {
+        empty(
+            s,
+            r.split_top(r.h - 34.0, 0.0).0,
+            "lock.slash",
+            "Dossier Téléchargements inaccessible",
+            "Autorisez Nox dans Réglages Système › Confidentialité › Fichiers et dossiers.",
+        );
+        pill(
+            s,
+            cx,
+            Rect::new(r.mid_x() - 90.0, r.max_y() - 30.0, 180.0, 24.0),
+            "Ouvrir les Réglages Système",
+            false,
+            Action::OpenUrl(
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_FilesAndFolders"
+                    .into(),
+            ),
+        );
+        return;
+    }
     if d.items.is_empty() {
         return empty(
             s,
@@ -255,6 +279,22 @@ pub fn files(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         s.hit(r, Action::PickFiles, "Choisir des fichiers");
         return;
     }
+    let status = if f.compressing {
+        Some(("Compression en cours…".to_string(), Color::SECONDARY))
+    } else {
+        match &f.last_result {
+            Some(Ok(m)) => Some((m.clone(), Color::TERTIARY)),
+            Some(Err(e)) => Some((e.clone(), Color::ORANGE)),
+            None => None,
+        }
+    };
+    let r = if let Some((msg, color)) = status {
+        let (body, foot) = r.split_top(r.h - 14.0, 0.0);
+        s.text(foot, msg, tertiary(10.0).color(color).align(Align::Right));
+        body
+    } else {
+        r
+    };
     let ids: Vec<u64> = f.items.iter().map(|i| i.id).collect();
     let (head, body) = r.split_top(22.0, 8.0);
     let actions = [
@@ -356,6 +396,20 @@ fn part_label(p: &str) -> &str {
 pub fn accessories(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     let Some(a) = cx.state.accessories.as_ref() else {
         return module_missing(s, r, Section::Accessories, enabled);
+    };
+    let r = if matches!(
+        a.bluetooth,
+        PermissionState::Denied | PermissionState::Restricted
+    ) {
+        let (note, rest) = r.split_top(14.0, 6.0);
+        s.text(
+            note,
+            "Bluetooth refusé : batteries des appareils Bluetooth indisponibles.",
+            tertiary(10.0).color(Color::ORANGE),
+        );
+        rest
+    } else {
+        r
     };
     let devices: Vec<_> = a.devices.iter().filter(|d| d.connected).collect();
     if devices.is_empty() {

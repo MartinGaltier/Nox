@@ -75,7 +75,7 @@ fn finish(region: Option<WatchRect>, trigger: WatchTrigger) {
                 a.hub
                     .send(Command::Watch(WatchCommand::Start { region: r, trigger }));
             }
-            None => a.hub.send(Command::Watch(WatchCommand::Stop)),
+            None => a.hub.send(Command::Watch(WatchCommand::CancelSelection)),
         }
         a.update();
     }

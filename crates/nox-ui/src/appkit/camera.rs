@@ -3,11 +3,11 @@
 //! an empty host `CALayer` inside the island view and hands it over while the
 //! camera page is visible.
 //!
-//! Ownership contract (agreed with integrations): the host layer is retained
+//! Ownership contract (agreed with integrations,
+//! `nox_core::model::camera::set_preview_host`): the host layer is retained
 //! by the UI for as long as it is handed out, it is touched on the main
-//! thread only, and `None` is sent before it is removed. Until the
-//! integrations crate exposes its hook, no layer is attached and the page
-//! says so honestly.
+//! thread only, and `None` is sent (detaching synchronously) before the host
+//! is removed and released. Order: host then `Start`; `Stop` then `None`.
 
 use super::island_window::IslandView;
 use super::util::ns_rect;
@@ -20,11 +20,14 @@ thread_local! {
     static HOST: RefCell<Option<Retained<CALayer>>> = const { RefCell::new(None) };
 }
 
-/// Hook to the camera module, if available. Returns true when a preview
-/// layer will be attached to the host.
-fn hand_over(_host: Option<&CALayer>) -> bool {
-    // The integrations crate has not published `set_preview_host` yet.
-    false
+/// Hands the host to the camera module. Returns true when a host is set.
+fn hand_over(host: Option<&CALayer>) -> bool {
+    // SAFETY (consumer side of the contract): the pointer stays valid because
+    // HOST keeps the layer retained until after `set_preview_host(None)`
+    // returned, and the camera module only dereferences it on the main thread.
+    let ptr = host.map(|l| l as *const CALayer as usize);
+    nox_core::model::camera::set_preview_host(ptr);
+    ptr.is_some()
 }
 
 /// Shows/hides the host layer. Returns whether a preview is attached.

@@ -6,7 +6,7 @@ use crate::geom::{Color, Rect};
 use crate::scene::{Action, Align, Op, Scene, Weight};
 use nox_core::model::camera::CameraCommand;
 use nox_core::model::shortcuts::{QuickAction, ShortcutCommand};
-use nox_core::model::watch::{WatchCommand, WatchPhase, WatchTrigger};
+use nox_core::model::watch::{WatchCommand, WatchOutcome, WatchPhase, WatchTrigger};
 use nox_core::permissions::Permission;
 use nox_core::{Command, Section};
 
@@ -72,10 +72,39 @@ pub fn watch(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         detail.join(" · "),
         secondary(10.5),
     );
+    if let Some(e) = &w.error {
+        s.text(
+            Rect::new(inner.x + 34.0, inner.y + 19.0, inner.w - 140.0, 14.0),
+            e,
+            secondary(10.5).color(Color::ORANGE),
+        );
+    }
     let active = matches!(
         w.phase,
         WatchPhase::Watching | WatchPhase::Changing | WatchPhase::Triggered
     );
+    if let (WatchPhase::Triggered | WatchPhase::Idle, Some(outcome)) = (w.phase, w.outcome) {
+        let txt = match outcome {
+            WatchOutcome::Changed => "La zone a changé.",
+            WatchOutcome::Settled => "La zone ne change plus.",
+            WatchOutcome::Lost => "La zone n’est plus visible.",
+        };
+        s.text(
+            Rect::new(inner.x + 34.0, inner.y + 34.0, inner.w - 240.0, 13.0),
+            txt,
+            tertiary(10.0),
+        );
+        if w.region.is_some() {
+            pill(
+                s,
+                cx,
+                Rect::new(inner.max_x() - 196.0, inner.y + 6.0, 100.0, 24.0),
+                "Relancer",
+                false,
+                Action::Send(Command::Watch(WatchCommand::Again)),
+            );
+        }
+    }
     if active {
         pill(
             s,
@@ -145,7 +174,9 @@ pub fn camera(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             radius: 14.0,
         });
     } else {
-        let msg = if c.devices.is_empty() {
+        let msg = if let Some(e) = &c.error {
+            e.as_str()
+        } else if c.devices.is_empty() {
             "Aucune caméra détectée"
         } else if !cx.camera_attached {
             "Aperçu en attente du module caméra"

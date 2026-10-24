@@ -33,7 +33,17 @@ pub fn calendar(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         .events
         .iter()
         .filter(|e| e.end >= cx.now && e.start <= horizon)
-        .filter(|e| !cs.hidden_calendars.contains(&e.calendar))
+        .filter(|e| {
+            // Hidden by identifier or, for older settings, by title.
+            let title = c
+                .calendars
+                .iter()
+                .find(|k| k.id == e.calendar)
+                .map(|k| k.title.as_str());
+            !cs.hidden_calendars
+                .iter()
+                .any(|h| *h == e.calendar || Some(h.as_str()) == title)
+        })
         .filter(|e| cs.show_reminders || !e.is_reminder)
         .collect();
     events.sort_by(|a, b| a.start.total_cmp(&b.start));
@@ -83,7 +93,7 @@ pub fn calendar(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                 format::hour_minute(e.end)
             )
         };
-        let join = e.url.is_some();
+        let join = e.call.is_some();
         let tw = row.w - 20.0 - if join { 84.0 } else { 0.0 } - 90.0;
         s.text(
             Rect::new(row.x + 18.0, row.y + 4.0, tw, 16.0),
@@ -489,7 +499,10 @@ mod tests {
             calendars: vec![],
             access: PermissionState::Granted,
             events: vec![CalendarEvent {
-                call: None,
+                call: Some(nox_core::model::calendar::VideoCall {
+                    service: nox_core::model::calendar::CallService::Meet,
+                    url: "https://meet.example/x".into(),
+                }),
                 id: "e1".into(),
                 title: "Point d’équipe".into(),
                 start: now + 600.0,
