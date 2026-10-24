@@ -44,6 +44,10 @@
 	<string>Nox affiche la batterie de vos accessoires Bluetooth.</string>
 	<key>NSDownloadsFolderUsageDescription</key>
 	<string>Nox suit la progression de vos téléchargements dans l’îlot. Rien n’est copié ni envoyé.</string>
+	<key>NSDesktopFolderUsageDescription</key>
+	<string>Nox affiche vos captures d’écran récentes dans l’îlot (module Captures, désactivé par défaut).</string>
+	<key>NSDocumentsFolderUsageDescription</key>
+	<string>Nox affiche vos captures d’écran récentes si vous les enregistrez dans Documents.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Martin Galtier — GPL-3.0-or-later. Inspiré de Vorssaint (GPL-3.0-or-later).</string>
 </dict>

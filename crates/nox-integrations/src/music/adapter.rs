@@ -86,11 +86,7 @@ pub enum Event {
 /// 3. a development tree (`target/<profile>` + `packaging/resources`).
 pub fn locate() -> Result<(PathBuf, PathBuf), String> {
     let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
-    // Development override only: in release, nothing in the environment can
-    // choose the library perl loads.
-    #[cfg(debug_assertions)]
-    if let Some(d) = std::env::var_os("NOX_NOWPLAYING_DIR") {
-        let d = PathBuf::from(d);
+    if let Some(d) = env_override() {
         candidates.push((d.join(SCRIPT), d.join(LIBRARY)));
     }
     if let Ok(exe) = std::env::current_exe() {
@@ -117,6 +113,29 @@ pub fn locate() -> Result<(PathBuf, PathBuf), String> {
     Err(format!("{SCRIPT} / {LIBRARY} introuvables"))
 }
 
+/// A clean environment: nothing (PERL5LIB, PERL5OPT, PERLIO…) may inject
+/// code into the adapter. Only HOME/TMPDIR/USER/LOGNAME (Foundation) and a
+/// system PATH are kept.
+pub fn clean_env(cmd: &mut Command) {
+    cmd.env_clear()
+        .envs(
+            ["HOME", "TMPDIR", "USER", "LOGNAME"]
+                .iter()
+                .filter_map(|k| std::env::var_os(k).map(|v| (*k, v))),
+        )
+        .env("PATH", "/usr/bin:/bin");
+}
+
+/// `NOX_NOWPLAYING_DIR`, honoured in debug builds only: in release nothing
+/// in the environment can choose the library perl loads.
+pub fn env_override() -> Option<PathBuf> {
+    if cfg!(debug_assertions) {
+        std::env::var_os("NOX_NOWPLAYING_DIR").map(PathBuf::from)
+    } else {
+        None
+    }
+}
+
 pub struct Adapter {
     child: Child,
     stdin: Option<ChildStdin>,
@@ -125,19 +144,10 @@ pub struct Adapter {
 
 impl Adapter {
     pub fn spawn(script: &Path, library: &Path, tx: Sender<Event>) -> std::io::Result<Self> {
-        let mut child = Command::new("/usr/bin/perl")
-            .arg(script)
-            .arg(library)
-            .arg("watch")
-            // A clean environment: nothing (PERL5LIB, PERL5OPT, PERLIO…) may
-            // inject code into the adapter. HOME/TMPDIR for Foundation.
-            .env_clear()
-            .envs(
-                ["HOME", "TMPDIR", "USER", "LOGNAME"]
-                    .iter()
-                    .filter_map(|k| std::env::var_os(k).map(|v| (*k, v))),
-            )
-            .env("PATH", "/usr/bin:/bin")
+        let mut cmd = Command::new("/usr/bin/perl");
+        cmd.arg(script).arg(library).arg("watch");
+        clean_env(&mut cmd);
+        let mut child = cmd
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
@@ -220,6 +230,33 @@ impl Drop for Adapter {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn perl_environment_is_cleared() {
+        let mut cmd = Command::new("/usr/bin/env");
+        cmd.env("PERL5OPT", "-Mevil")
+            .env("PERL5LIB", "/tmp/evil")
+            .env("PERLIO", ":x");
+        clean_env(&mut cmd);
+        let out = String::from_utf8(cmd.output().unwrap().stdout).unwrap();
+        assert!(
+            !out.contains("PERL"),
+            "no perl variable reaches the adapter: {out}"
+        );
+        assert!(out.lines().any(|l| l == "PATH=/usr/bin:/bin"));
+        let keys: Vec<&str> = out.lines().filter_map(|l| l.split('=').next()).collect();
+        assert!(
+            keys.iter()
+                .all(|k| ["HOME", "TMPDIR", "USER", "LOGNAME", "PATH"].contains(k)),
+            "{keys:?}"
+        );
+    }
+
+    #[test]
+    #[cfg(not(debug_assertions))]
+    fn release_ignores_library_override() {
+        assert_eq!(env_override(), None);
+    }
 
     #[test]
     fn parses_adapter_lines() {

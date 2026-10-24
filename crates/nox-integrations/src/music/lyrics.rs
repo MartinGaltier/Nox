@@ -14,6 +14,8 @@ use std::time::Duration;
 const ENDPOINT: &str = "https://lrclib.net/api/get";
 /// Not-found answers are retried after a week.
 const MISSING_TTL_SECS: f64 = 7.0 * 86_400.0;
+/// Any cached entry older than this is ignored and removed.
+pub const MAX_AGE_SECS: f64 = 90.0 * 86_400.0;
 const SOURCE: &str = "LRCLIB";
 
 #[derive(Debug, Clone, PartialEq)]
@@ -131,7 +133,9 @@ fn read_cache(dir: &Path, track: &Track, now: f64) -> Option<CacheEntry> {
         return None;
     }
     let e: CacheEntry = serde_json::from_slice(&bytes).ok()?;
-    if e.missing && now - e.fetched_at > MISSING_TTL_SECS {
+    let age = now - e.fetched_at;
+    if age > MAX_AGE_SECS || (e.missing && age > MISSING_TTL_SECS) {
+        let _ = std::fs::remove_file(cache_path(dir, track));
         return None;
     }
     Some(e)
@@ -148,10 +152,15 @@ fn write_cache(dir: &Path, track: &Track, e: &CacheEntry) {
     {
         log::debug!("lyrics cache write failed: {err}");
     }
-    prune(dir, MAX_CACHE_ENTRIES);
+    prune(
+        dir,
+        MAX_CACHE_ENTRIES,
+        std::time::Duration::from_secs_f64(MAX_AGE_SECS),
+    );
 }
 
-fn prune(dir: &Path, keep: usize) {
+/// Keeps the `keep` newest entries younger than `max_age`.
+fn prune(dir: &Path, keep: usize, max_age: std::time::Duration) {
     let Ok(rd) = std::fs::read_dir(dir) else {
         return;
     };
@@ -160,12 +169,13 @@ fn prune(dir: &Path, keep: usize) {
         .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
         .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
         .collect();
-    if files.len() <= keep {
-        return;
-    }
+    let now = std::time::SystemTime::now();
     files.sort_by_key(|f| std::cmp::Reverse(f.0));
-    for (_, p) in files.into_iter().skip(keep) {
-        let _ = std::fs::remove_file(p);
+    for (i, (t, p)) in files.into_iter().enumerate() {
+        let old = now.duration_since(t).is_ok_and(|a| a > max_age);
+        if i >= keep || old {
+            let _ = std::fs::remove_file(p);
+        }
     }
 }
 
@@ -281,7 +291,7 @@ mod tests {
             &t,
             &CacheEntry {
                 synced: Some("[00:01.00]Cached".into()),
-                fetched_at: 0.0,
+                fetched_at: nox_core::model::now(),
                 ..Default::default()
             },
         );
@@ -308,12 +318,36 @@ mod tests {
             x.title = format!("t{i}");
             write_cache(&dir, &x, &CacheEntry::default());
         }
-        prune(&dir, 3);
+        prune(&dir, 3, std::time::Duration::from_secs(3600));
         assert_eq!(
             std::fs::read_dir(&dir).unwrap().count(),
             3,
             "cache is capped"
         );
+        prune(&dir, 100, std::time::Duration::ZERO);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            0,
+            "old entries pruned"
+        );
+        write_cache(
+            &dir,
+            &t,
+            &CacheEntry {
+                synced: Some("[00:01.00]x".into()),
+                fetched_at: 0.0,
+                ..Default::default()
+            },
+        );
+        assert!(
+            read_cache(&dir, &t, MAX_AGE_SECS + 1.0).is_none(),
+            "positive entries expire too"
+        );
+        assert!(!cache_path(&dir, &t).exists(), "and are deleted");
+        let lyr = dir.join("lyrics");
+        std::fs::create_dir_all(&lyr).unwrap();
+        clear_cache(&lyr);
+        assert!(!lyr.exists(), "purge removes the lyrics folder");
         let _ = std::fs::remove_dir_all(dir);
     }
 

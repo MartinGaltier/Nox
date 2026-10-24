@@ -1,7 +1,7 @@
 //! Data models published by modules and rendered by the UI.
 //!
 //! Ownership (edit only your files; changes elsewhere go through the coordinator):
-//! - Intégrations: music, calendar, notifications, accessories, downloads, files, shortcuts, camera
+//! - Intégrations: music, calendar, notifications, accessories, downloads, files, shortcuts, camera, captures, scratchpad
 //! - Activités: agents, watch, timers, companion
 //! - Mesures: metrics
 //! - Énergie: power
@@ -10,6 +10,7 @@ pub mod accessories;
 pub mod agents;
 pub mod calendar;
 pub mod camera;
+pub mod captures;
 pub mod companion;
 pub mod downloads;
 pub mod files;
@@ -17,6 +18,7 @@ pub mod metrics;
 pub mod music;
 pub mod notifications;
 pub mod power;
+pub mod scratchpad;
 pub mod shortcuts;
 pub mod timers;
 pub mod watch;

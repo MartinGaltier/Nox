@@ -21,7 +21,7 @@ jobs:
       - name: Tests (automatable only)
         # Hardware/permission dependent tests are #[ignore]d; run them on a
         # real Mac with: cargo test -- --ignored
-        run: cargo test --workspace --locked
+        run: cargo test --workspace --locked --no-fail-fast
       - name: Build app bundle (arm64)
         run: scripts/build-app.sh
       - uses: actions/upload-artifact@v4

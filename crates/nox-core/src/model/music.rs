@@ -107,6 +107,8 @@ pub enum MusicCommand {
     /// Ask for Automation towards the current player (shows the system
     /// prompt once). Shuffle/repeat/queue never prompt on their own.
     RequestAutomation,
+    /// Delete every cached lyric (settings "purge").
+    ClearLyricsCache,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
