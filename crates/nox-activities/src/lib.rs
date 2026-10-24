@@ -3,6 +3,7 @@
 
 use nox_core::{Module, ModuleId};
 
+pub mod agents;
 pub mod clock;
 pub mod sound;
 pub mod timers;

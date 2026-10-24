@@ -72,7 +72,9 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 name = "nox-activities"
 version = "0.1.0"
 dependencies = [
+ "libc",
  "log",
+ "memchr",
  "nox-core",
  "objc2",
  "objc2-app-kit",
