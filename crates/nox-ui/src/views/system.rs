@@ -45,21 +45,26 @@ fn tiles(m: &MetricsSnapshot) -> Vec<Tile> {
             title: "Mémoire",
             available: mem.value().is_some(),
             value: format::reading(mem, |v| {
-                format!(
-                    "{} / {}",
-                    format::bytes(v.used as f64),
-                    format::bytes(v.total as f64)
-                )
+                format::percent(if v.total > 0 {
+                    v.used as f64 / v.total as f64 * 100.0
+                } else {
+                    f64::NAN
+                })
             }),
-            detail: match mem.value().map(|v| &v.pressure) {
-                Some(p) => format::reading(p, |p| {
-                    match p {
-                        MemoryPressure::Normal => "Pression normale",
-                        MemoryPressure::Warning => "Pression élevée",
-                        MemoryPressure::Critical => "Pression critique",
-                    }
-                    .to_string()
-                }),
+            detail: match mem.value() {
+                Some(v) => {
+                    let pressure = match v.pressure.value() {
+                        Some(MemoryPressure::Normal) => " · normale",
+                        Some(MemoryPressure::Warning) => " · pression élevée",
+                        Some(MemoryPressure::Critical) => " · pression critique",
+                        None => "",
+                    };
+                    format!(
+                        "{} / {}{pressure}",
+                        format::bytes(v.used as f64),
+                        format::bytes(v.total as f64)
+                    )
+                }
                 None => String::new(),
             },
             series: Some((Series::Memory, Some(100.0))),
@@ -111,12 +116,23 @@ fn tiles(m: &MetricsSnapshot) -> Vec<Tile> {
             value: format::reading(&m.power, |p| {
                 format::reading(&p.system_watts, |w| format::watts(*w))
             }),
-            detail: format::reading(&m.power, |p| {
-                format!(
-                    "CPU {}",
-                    format::reading(&p.cpu_watts, |w| format::watts(*w))
-                )
-            }),
+            // Component powers are often unavailable on recent macOS: only
+            // show the ones that have a value.
+            detail: m
+                .power
+                .value()
+                .map(|p| {
+                    [("CPU", &p.cpu_watts), ("GPU", &p.gpu_watts)]
+                        .into_iter()
+                        .filter_map(|(k, r)| {
+                            r.value().map(|w| {
+                                format::reading(r, |_| format!("{k} {}", format::watts(*w)))
+                            })
+                        })
+                        .collect::<Vec<_>>()
+                        .join(" · ")
+                })
+                .unwrap_or_default(),
             series: Some((Series::SystemPower, None)),
             color: Color::RED,
         },

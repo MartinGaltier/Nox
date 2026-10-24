@@ -34,6 +34,31 @@ fn graph(s: &mut Scene, r: Rect, m: &MetricsState, series: Series, max: Option<f
     sparkline(s, r.inset(2.0, 2.0), &m.history, series, max, c);
 }
 
+/// (group, max °C, mean °C, count), CPU and GPU first then by name.
+pub fn sensor_groups(list: &[nox_core::model::metrics::Sensor]) -> Vec<(String, f64, f64, usize)> {
+    let mut groups: Vec<(String, f64, f64, usize)> = vec![];
+    for x in list.iter().filter(|x| x.celsius.is_finite()) {
+        match groups.iter_mut().find(|g| g.0 == x.group) {
+            Some(g) => {
+                g.1 = g.1.max(x.celsius);
+                g.2 += x.celsius;
+                g.3 += 1;
+            }
+            None => groups.push((x.group.clone(), x.celsius, x.celsius, 1)),
+        }
+    }
+    for g in &mut groups {
+        g.2 /= g.3 as f64;
+    }
+    let rank = |g: &str| match g {
+        "CPU" => 0,
+        "GPU" => 1,
+        _ => 2,
+    };
+    groups.sort_by(|a, b| rank(&a.0).cmp(&rank(&b.0)).then(a.0.cmp(&b.0)));
+    groups
+}
+
 pub fn render(s: &mut Scene, r: Rect, metrics: Option<&MetricsState>, settings: &Settings) {
     s.shows_metrics = true;
     let Some(m) = metrics else {
@@ -316,15 +341,19 @@ pub fn render(s: &mut Scene, r: Rect, metrics: Option<&MetricsState>, settings: 
     let sen = panel(s, cell(1, 2, 1), "Capteurs");
     match &snap.sensors {
         Reading::Measured(list) | Reading::Estimated(list) if !list.is_empty() => {
+            // One row per group (CPU, GPU first): hottest and mean.
             let mut y = sen.y;
-            let rows = ((sen.h) / 17.0).floor() as usize;
-            for x in list.iter().take(rows) {
+            for (group, max, mean, n) in sensor_groups(list) {
                 y = kv(
                     s,
                     sen,
                     y,
-                    &format!("{} · {}", x.group, x.label),
-                    format::celsius(x.celsius),
+                    &format!("{group} ({n})"),
+                    format!(
+                        "max {} · moy. {}",
+                        format::celsius(max),
+                        format::celsius(mean)
+                    ),
                 );
             }
         }
@@ -415,6 +444,28 @@ mod tests {
         );
         assert!(s.has_text("P") && s.has_text("E"));
         assert!(s.has_text("Ventilateurs : Indisponible"));
+        let g = sensor_groups(&[
+            nox_core::model::metrics::Sensor {
+                key: "a".into(),
+                label: "SSD 1".into(),
+                group: "SSD".into(),
+                celsius: 30.0,
+            },
+            nox_core::model::metrics::Sensor {
+                key: "b".into(),
+                label: "CPU 1".into(),
+                group: "CPU".into(),
+                celsius: 70.0,
+            },
+            nox_core::model::metrics::Sensor {
+                key: "c".into(),
+                label: "CPU 2".into(),
+                group: "CPU".into(),
+                celsius: 80.0,
+            },
+        ]);
+        assert_eq!(g[0], ("CPU".to_string(), 80.0, 75.0, 2));
+        assert_eq!(g[1].0, "SSD");
         let mut s = Scene::default();
         render(
             &mut s,
