@@ -397,10 +397,12 @@ impl Collector {
             .store
             .as_ref()
             .and_then(DynamicStore::primary_interface);
-        match net::interface_counters() {
-            Ok(c) => self.net.sample(primary.as_deref(), &c, now, max_gap),
-            Err(e) => Reading::Unavailable(Unavailable::Error(e)),
-        }
+        let counters = match primary.as_deref().map(net::interface_counters) {
+            Some(Err(e)) => return Reading::Unavailable(Unavailable::Error(e)),
+            Some(Ok(c)) => vec![c],
+            None => vec![],
+        };
+        self.net.sample(primary.as_deref(), &counters, now, max_gap)
     }
 
     fn disks(&mut self) -> Reading<Vec<nox_core::model::metrics::DiskInfo>> {

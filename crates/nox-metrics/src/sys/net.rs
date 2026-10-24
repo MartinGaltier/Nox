@@ -1,102 +1,73 @@
-//! Interface byte counters (64-bit, `NET_RT_IFLIST2`) and the primary
-//! interface from the SystemConfiguration dynamic store.
+//! Interface byte counters (`net.link.generic.ifdata`, 64-bit) and the
+//! primary interface from the SystemConfiguration dynamic store.
+//!
+//! `NET_RT_IFLIST2` is not used: on macOS 27 its `if_data64` byte counters
+//! are truncated to 32 bits for unprivileged callers (en0 rx read 659 MB
+//! while `netstat -ib` showed 4.95 GB = 659 MB + 2^32). The per-interface
+//! ifmib entry returns the same 64-bit values as `netstat -ib`.
 
 use super::cf::{CFTypeRef, Cf};
 use crate::network::IfCounters;
+use std::ffi::CString;
 
-pub fn interface_counters() -> Result<Vec<IfCounters>, String> {
-    let mut mib = [libc::CTL_NET, libc::PF_ROUTE, 0, 0, libc::NET_RT_IFLIST2, 0];
-    let mut len = 0usize;
-    // SAFETY: size query with a null buffer.
+/// `struct ifmibdata` (<net/if_mib.h>).
+#[repr(C, packed(4))]
+#[derive(Clone, Copy)]
+struct IfMibData {
+    name: [u8; 16],
+    pcount: u32,
+    flags: u32,
+    snd_len: u32,
+    snd_maxlen: u32,
+    snd_drops: u32,
+    filler: [u32; 4],
+    data: libc::if_data64,
+}
+
+const _: () = assert!(std::mem::size_of::<IfMibData>() == 180);
+
+/// 64-bit byte counters of one interface.
+pub fn interface_counters(name: &str) -> Result<IfCounters, String> {
+    let c = CString::new(name).map_err(|e| e.to_string())?;
+    // SAFETY: c is NUL-terminated.
+    let index = unsafe { libc::if_nametoindex(c.as_ptr()) };
+    if index == 0 {
+        return Err(format!("interface {name} not found"));
+    }
+    let mut mib = [
+        libc::CTL_NET,
+        libc::PF_LINK,
+        libc::NETLINK_GENERIC,
+        libc::IFMIB_IFDATA,
+        index as libc::c_int,
+        libc::IFDATA_GENERAL,
+    ];
+    // SAFETY: an all-zero ifmibdata is valid.
+    let mut d: IfMibData = unsafe { std::mem::zeroed() };
+    let mut len = std::mem::size_of::<IfMibData>();
+    // SAFETY: `d` is a writable buffer of `len` bytes.
     let r = unsafe {
         libc::sysctl(
             mib.as_mut_ptr(),
             6,
-            std::ptr::null_mut(),
+            (&mut d as *mut IfMibData).cast(),
             &mut len,
             std::ptr::null_mut(),
             0,
         )
     };
-    if r != 0 || len == 0 {
-        return Err("sysctl NET_RT_IFLIST2 size".into());
+    if r != 0 || len < std::mem::size_of::<IfMibData>() {
+        return Err(format!("sysctl ifmib {name}"));
     }
-    // Interfaces can appear between the two calls.
-    len += len / 8;
-    let mut buf = vec![0u8; len];
-    // SAFETY: buf has `len` bytes; the kernel writes at most `len`.
-    let r = unsafe {
-        libc::sysctl(
-            mib.as_mut_ptr(),
-            6,
-            buf.as_mut_ptr().cast(),
-            &mut len,
-            std::ptr::null_mut(),
-            0,
-        )
-    };
-    if r != 0 {
-        return Err("sysctl NET_RT_IFLIST2".into());
-    }
-    buf.truncate(len);
-    let mut out = vec![];
-    let mut off = 0usize;
-    let hdr = std::mem::size_of::<libc::if_msghdr2>();
-    while off + 4 <= buf.len() {
-        let msglen = u16::from_ne_bytes([buf[off], buf[off + 1]]) as usize;
-        if msglen == 0 || off + msglen > buf.len() {
-            break;
-        }
-        let kind = buf[off + 3];
-        if i32::from(kind) == libc::RTM_IFINFO2 && msglen >= hdr {
-            // SAFETY: at least size_of::<if_msghdr2>() bytes are in bounds;
-            // read_unaligned copes with the packed layout.
-            let m: libc::if_msghdr2 =
-                unsafe { std::ptr::read_unaligned(buf[off..].as_ptr().cast()) };
-            let index = m.ifm_index;
-            let flags = m.ifm_flags;
-            let data = m.ifm_data;
-            // The interface's sockaddr_dl (RTA_IFP) follows the header and
-            // carries its name: no per-interface if_indextoname lookup.
-            let name =
-                link_name(&buf[off + hdr..off + msglen]).or_else(|| if_name(u32::from(index)));
-            if let Some(name) = name {
-                out.push(IfCounters {
-                    name,
-                    up: flags & libc::IFF_UP != 0,
-                    loopback: flags & libc::IFF_LOOPBACK != 0,
-                    rx: data.ifi_ibytes,
-                    tx: data.ifi_obytes,
-                });
-            }
-        }
-        off += msglen;
-    }
-    Ok(out)
-}
-
-/// Name inside a `sockaddr_dl` (bytes: len, family, index×2, type, nlen,
-/// alen, slen, data…).
-fn link_name(sa: &[u8]) -> Option<String> {
-    if sa.len() < 8 || i32::from(sa[1]) != libc::AF_LINK {
-        return None;
-    }
-    let len = usize::from(sa[0]).min(sa.len());
-    let nlen = usize::from(sa[5]);
-    let name = sa.get(8..8 + nlen).filter(|_| 8 + nlen <= len)?;
-    (!name.is_empty()).then(|| String::from_utf8_lossy(name).into_owned())
-}
-
-fn if_name(index: u32) -> Option<String> {
-    let mut buf = [0 as libc::c_char; libc::IF_NAMESIZE];
-    // SAFETY: buf holds IF_NAMESIZE bytes as required.
-    let p = unsafe { libc::if_indextoname(index, buf.as_mut_ptr()) };
-    if p.is_null() {
-        return None;
-    }
-    // SAFETY: if_indextoname wrote a NUL-terminated name into buf.
-    let s = unsafe { std::ffi::CStr::from_ptr(buf.as_ptr()) };
-    Some(s.to_string_lossy().into_owned())
+    let data = d.data;
+    let flags = d.flags as i32;
+    Ok(IfCounters {
+        name: name.to_owned(),
+        up: flags & libc::IFF_UP != 0,
+        loopback: flags & libc::IFF_LOOPBACK != 0,
+        rx: data.ifi_ibytes,
+        tx: data.ifi_obytes,
+    })
 }
 
 #[link(name = "SystemConfiguration", kind = "framework")]

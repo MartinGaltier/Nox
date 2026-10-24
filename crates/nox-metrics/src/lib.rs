@@ -172,8 +172,8 @@ pub mod profile {
                 }),
             ),
             (
-                "interface counters",
-                time(n, || drop(sys::net::interface_counters())),
+                "interface counters (en0)",
+                time(n, || drop(sys::net::interface_counters("en0"))),
             ),
             ("mounts", time(n, || drop(sys::disk::mounts()))),
         ]
