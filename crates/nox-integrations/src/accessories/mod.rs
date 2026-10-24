@@ -6,7 +6,7 @@
 
 use crate::sys::peripherals::{self, BtDevice, HidBattery};
 use nox_core::model::accessories::{
-    AccessoriesState, Accessory, AccessoryKind, AccessorySettings, BatteryPart,
+    AccessoriesState, Accessory, AccessoryCommand, AccessoryKind, AccessorySettings, BatteryPart,
 };
 use nox_core::permissions::PermissionState;
 use nox_core::{
@@ -24,6 +24,8 @@ const RECOVERY_MARGIN: u8 = 5;
 pub struct AccessoriesModule {
     worker: Option<Worker>,
     settings: Arc<Mutex<AccessorySettings>>,
+    /// Pending Bluetooth access request (user action), dropped on stop.
+    bluetooth_request: Option<peripherals::BluetoothRequest>,
 }
 
 impl Default for AccessoriesModule {
@@ -31,6 +33,29 @@ impl Default for AccessoriesModule {
         Self {
             worker: None,
             settings: Arc::new(Mutex::new(AccessorySettings::default())),
+            bluetooth_request: None,
+        }
+    }
+}
+
+impl AccessoriesModule {
+    /// `AccessoryCommand` handling (routed once `Command::Accessories`
+    /// exists in nox-core). Never blocks: the prompt is asynchronous and
+    /// the polling loop picks the answer up on its next pass.
+    pub fn handle(&mut self, c: AccessoryCommand) {
+        match c {
+            AccessoryCommand::RequestBluetooth => {
+                if peripherals::bluetooth_permission() == PermissionState::NotDetermined {
+                    self.bluetooth_request = Some(peripherals::request_bluetooth());
+                } else if peripherals::bluetooth_permission() == PermissionState::Denied {
+                    crate::sys::workspace::open_url(
+                        nox_core::permissions::Permission::Bluetooth.settings_url(),
+                    );
+                }
+                if let Some(w) = &self.worker {
+                    w.token().nudge();
+                }
+            }
         }
     }
 }
@@ -56,6 +81,7 @@ impl Module for AccessoriesModule {
         if let Some(mut w) = self.worker.take() {
             w.stop();
         }
+        self.bluetooth_request = None;
     }
 
     fn settings_changed(&mut self, settings: &Arc<Settings>) {

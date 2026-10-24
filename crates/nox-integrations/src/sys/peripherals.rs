@@ -136,6 +136,35 @@ pub fn hid_batteries() -> Vec<HidBattery> {
     out
 }
 
+/// An in-flight Bluetooth access request: a `CBCentralManager` on its own
+/// dispatch queue, whose creation shows the system prompt asynchronously
+/// (nothing waits for the answer). Kept alive until the decision is known.
+pub struct BluetoothRequest {
+    _manager: Retained<objc2_core_bluetooth::CBCentralManager>,
+    _queue: dispatch2::DispatchRetained<dispatch2::DispatchQueue>,
+}
+
+// SAFETY: CBCentralManager is used only through its own serial queue; we
+// never call it after creation (it is only kept alive, then released).
+unsafe impl Send for BluetoothRequest {}
+
+pub fn request_bluetooth() -> BluetoothRequest {
+    use objc2::AnyThread;
+    let queue = dispatch2::DispatchQueue::new("io.github.martingaltier.nox.bluetooth", None);
+    // SAFETY: no delegate; callbacks (none) would go to our private queue.
+    let manager = unsafe {
+        objc2_core_bluetooth::CBCentralManager::initWithDelegate_queue(
+            objc2_core_bluetooth::CBCentralManager::alloc(),
+            None,
+            Some(&queue),
+        )
+    };
+    BluetoothRequest {
+        _manager: manager,
+        _queue: queue,
+    }
+}
+
 /// Bluetooth permission (never prompts).
 pub fn bluetooth_permission() -> PermissionState {
     // SAFETY: class property read, no side effects.
