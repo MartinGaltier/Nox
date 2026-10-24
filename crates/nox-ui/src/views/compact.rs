@@ -247,7 +247,7 @@ pub fn alert_symbol_color(kind: AlertKind) -> Color {
         }
         AlertKind::LowBattery | AlertKind::AccessoryLowBattery => Color::RED,
         AlertKind::TimerDone | AlertKind::FocusPhase => Color::ORANGE,
-        AlertKind::CalendarSoon => Color::ACCENT,
+        AlertKind::CalendarSoon | AlertKind::TrackChanged => Color::ACCENT,
         AlertKind::KeepAwake | AlertKind::PowerSource => Color::YELLOW,
         AlertKind::AccessoryConnected | AlertKind::Notification | AlertKind::Info => Color::TEXT,
     }
@@ -266,6 +266,7 @@ pub fn alert_section(kind: AlertKind) -> Option<Section> {
         AlertKind::CalendarSoon => Section::Calendar,
         AlertKind::Notification => Section::Notifications,
         AlertKind::KeepAwake => Section::KeepAwake,
+        AlertKind::TrackChanged => Section::Music,
         AlertKind::Info => return None,
     })
 }
