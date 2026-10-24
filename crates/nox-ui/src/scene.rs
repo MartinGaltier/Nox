@@ -160,6 +160,24 @@ pub enum Action {
     Collapse,
     /// Open the island on a section (from the compact strip or an alert).
     Open(Option<Section>),
+    /// Click on a level slider: value = (click.x - x) / w.
+    SetLevel {
+        x: f64,
+        w: f64,
+        control: LevelControl,
+    },
+    /// Irreversible action: ask for confirmation first.
+    Confirm {
+        title: String,
+        detail: String,
+        command: Command,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LevelControl {
+    Volume,
+    Brightness,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]

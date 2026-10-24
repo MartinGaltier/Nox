@@ -21,6 +21,18 @@ pub fn error(mtm: MainThreadMarker, title: &str, detail: &str) {
     a.runModal();
 }
 
+/// Destructive confirmation; true if the user confirmed.
+pub fn confirm(mtm: MainThreadMarker, title: &str, detail: &str) -> bool {
+    let a = NSAlert::new(mtm);
+    a.setAlertStyle(NSAlertStyle::Warning);
+    a.setMessageText(&NSString::from_str(title));
+    a.setInformativeText(&NSString::from_str(detail));
+    a.addButtonWithTitle(&NSString::from_str("Confirmer"));
+    a.addButtonWithTitle(&NSString::from_str("Annuler"));
+    activate(mtm);
+    a.runModal() == NSAlertFirstButtonReturn
+}
+
 /// Explains what the closed-lid helper does before asking macOS for the
 /// administrator password (once). Nothing happens without explicit consent.
 pub fn install_helper(app: &App) {

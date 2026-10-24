@@ -91,6 +91,7 @@ struct Inner {
     screen_id: Option<u32>,
     artwork: HashMap<u64, Arc<Vec<u8>>>,
     seek_drag: Option<(f64, f64, f64)>,
+    page_shown: Option<Section>,
     /// Region selection asked; the overlay opens once watch reports Selecting.
     pending_selection: Option<nox_core::model::watch::WatchTrigger>,
     dragging_files: bool,
@@ -177,6 +178,7 @@ impl App {
                 screen_id: screen.as_deref().and_then(screens::display_id),
                 artwork: HashMap::new(),
                 seek_drag: None,
+                page_shown: None,
                 pending_selection: None,
                 dragging_files: false,
             }),
@@ -447,6 +449,19 @@ impl App {
             self.inner.borrow_mut().model.clamp_scroll(sec, extent);
         }
         let expanded_page = self.inner.borrow().model.machine.mode == Mode::Expanded;
+        // One-shot refreshes when a page appears (never polled).
+        let shown = section.filter(|_| expanded_page);
+        let appeared = {
+            let mut i = self.inner.borrow_mut();
+            let changed = i.page_shown != shown;
+            i.page_shown = shown;
+            changed.then_some(shown).flatten()
+        };
+        if appeared == Some(Section::Shortcuts) {
+            use nox_core::model::shortcuts::ShortcutCommand;
+            self.hub
+                .send(Command::Shortcuts(ShortcutCommand::RefreshControls));
+        }
         self.set_metrics_visible(shows_metrics && expanded_page);
         self.set_camera_visible(shows_camera && expanded_page);
         // Content refresh (countdowns, progress): one-shot timer, only if needed.
@@ -769,6 +784,26 @@ impl App {
                 let paths = files::pick_files(self.mtm);
                 if !paths.is_empty() {
                     self.hub.send(Command::Files(FileCommand::Add(paths)));
+                }
+            }
+            Action::SetLevel { x, w, control } => {
+                if let Some(p) = click {
+                    let off = self.inner.borrow().offset;
+                    let f = ((p.x - off - x) / w.max(1.0)).clamp(0.0, 1.0) as f32;
+                    use nox_core::model::shortcuts::ShortcutCommand;
+                    self.hub.send(Command::Shortcuts(match control {
+                        crate::scene::LevelControl::Volume => ShortcutCommand::SetVolume(f),
+                        crate::scene::LevelControl::Brightness => ShortcutCommand::SetBrightness(f),
+                    }));
+                }
+            }
+            Action::Confirm {
+                title,
+                detail,
+                command,
+            } => {
+                if super::alerts::confirm(self.mtm, &title, &detail) {
+                    self.hub.send(command);
                 }
             }
             Action::Collapse => self.inner.borrow_mut().model.machine.close(mono()),

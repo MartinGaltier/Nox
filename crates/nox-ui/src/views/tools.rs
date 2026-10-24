@@ -1,14 +1,16 @@
 //! Region watch, camera preview and quick shortcuts pages.
 
-use super::{Ctx, empty, label, module_missing, permission_gate, pill, secondary, tertiary};
+use super::{
+    Ctx, empty, icon_button, label, module_missing, permission_gate, pill, secondary, tertiary,
+};
 use crate::format;
 use crate::geom::{Color, Rect};
-use crate::scene::{Action, Align, Op, Scene, Weight};
+use crate::scene::{Action, Align, LevelControl, Op, Scene, Weight};
 use nox_core::model::camera::CameraCommand;
-use nox_core::model::shortcuts::{QuickAction, ShortcutCommand};
+use nox_core::model::shortcuts::{ControlsState, QuickAction, ShortcutCommand};
 use nox_core::model::watch::{WatchCommand, WatchOutcome, WatchPhase, WatchTrigger};
 use nox_core::permissions::Permission;
-use nox_core::{Command, Section};
+use nox_core::{Command, Reading, Section};
 
 pub fn watch(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     let Some(w) = cx.state.watch.as_ref() else {
@@ -226,15 +228,100 @@ fn quick_label(a: &QuickAction) -> String {
     }
 }
 
+/// Volume, mute, microphone and brightness row; returns the remaining rect.
+/// Controls the hardware lacks (`NotSupported`) are greyed out.
+fn controls(s: &mut Scene, cx: &Ctx, r: Rect, c: &ControlsState) -> Rect {
+    let (row, rest) = r.split_top(24.0, 10.0);
+    let half = (row.w - 40.0) / 2.0;
+    let level = |s: &mut Scene,
+                 x: f64,
+                 icon: &str,
+                 icon_action: Option<Action>,
+                 value: &Reading<f32>,
+                 control: LevelControl| {
+        let ir = Rect::new(x, row.y, 24.0, 24.0);
+        match (value.value(), icon_action) {
+            (Some(_), Some(a)) => icon_button(s, cx, ir, icon, 11.0, a, "Muet"),
+            (Some(_), None) => s.symbol(ir, icon, 11.0, Color::TEXT),
+            (None, _) => s.symbol(ir, icon, 11.0, Color::TERTIARY),
+        }
+        let track = Rect::new(x + 30.0, row.mid_y() - 3.0, half - 34.0, 6.0);
+        match value.value() {
+            Some(v) => {
+                super::bar(s, track, Some(f64::from(*v)), Color::WHITE.with_alpha(0.85));
+                s.hit(
+                    Rect::new(track.x, row.y, track.w, row.h),
+                    Action::SetLevel {
+                        x: track.x,
+                        w: track.w,
+                        control,
+                    },
+                    "Régler",
+                );
+            }
+            None => {
+                s.fill(track, 3.0, Color::TRACK.scaled_alpha(0.5));
+                if let Reading::Unavailable(u) = value {
+                    s.text(
+                        Rect::new(track.x, row.y + 5.0, track.w, 13.0),
+                        format::unavailable(u),
+                        tertiary(9.5).align(Align::Center),
+                    );
+                }
+            }
+        }
+    };
+    let muted = c.muted.value().copied().unwrap_or(false);
+    level(
+        s,
+        row.x,
+        if muted {
+            "speaker.slash.fill"
+        } else {
+            "speaker.wave.2.fill"
+        },
+        Some(Action::Send(Command::Shortcuts(ShortcutCommand::SetMuted(
+            !muted,
+        )))),
+        &c.volume,
+        LevelControl::Volume,
+    );
+    level(
+        s,
+        row.x + half + 6.0,
+        "sun.max.fill",
+        None,
+        &c.brightness,
+        LevelControl::Brightness,
+    );
+    let mic = Rect::new(row.max_x() - 28.0, row.y - 2.0, 28.0, 28.0);
+    match c.mic_muted.value() {
+        Some(m) => icon_button(
+            s,
+            cx,
+            mic,
+            if *m { "mic.slash.fill" } else { "mic.fill" },
+            11.0,
+            Action::Send(Command::Shortcuts(ShortcutCommand::SetMicMuted(!m))),
+            "Micro",
+        ),
+        None => s.symbol(mic, "mic.slash", 11.0, Color::TERTIARY),
+    }
+    rest
+}
+
 pub fn shortcuts(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     let Some(st) = cx.state.shortcuts.as_ref() else {
         return module_missing(s, r, Section::Shortcuts, enabled);
     };
+    let r = controls(s, cx, r, &st.controls);
+    // Do Not Disturb has no public API: never offered.
     let mut tiles: Vec<(String, String, QuickAction)> = cx
         .settings
         .shortcuts
         .entries
         .iter()
+        .filter(|e| e.action != QuickAction::ToggleDoNotDisturb)
         .map(|e| (e.label.clone(), e.symbol.clone(), e.action.clone()))
         .collect();
     for name in st.user_shortcuts.iter().take(8) {
@@ -292,11 +379,17 @@ pub fn shortcuts(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             &text,
             label(10.0).align(Align::Center),
         );
-        s.hit(
-            t,
-            Action::Send(Command::Shortcuts(ShortcutCommand::Run(act.clone()))),
-            text,
-        );
+        let run = Command::Shortcuts(ShortcutCommand::Run(act.clone()));
+        let action = if *act == QuickAction::EmptyTrash {
+            Action::Confirm {
+                title: "Vider la corbeille ?".into(),
+                detail: "Les éléments de la corbeille seront supprimés définitivement.".into(),
+                command: run,
+            }
+        } else {
+            Action::Send(run)
+        };
+        s.hit(t, action, text);
     }
     let last = match &st.last_result {
         Some(Ok(m)) => format!("✓ {m}"),
