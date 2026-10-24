@@ -124,6 +124,7 @@ pub struct FakeState {
     /// that moment (checks "journal before pmset").
     pub journal_probe: Option<std::path::PathBuf>,
     pub journal_present_at_enable: Vec<bool>,
+    pub failed_writes: u32,
 }
 
 impl Default for FakeState {
@@ -141,6 +142,7 @@ impl Default for FakeState {
             lid_closed: false,
             journal_probe: None,
             journal_present_at_enable: Vec::new(),
+            failed_writes: 0,
         }
     }
 }
@@ -164,6 +166,7 @@ impl SleepBackend for FakeBackend {
     fn set_sleep_disabled(&mut self, on: bool) -> Result<(), String> {
         self.with(|s| {
             if s.fail_writes {
+                s.failed_writes += 1;
                 return Err("pmset exited with 1".into());
             }
             if on && let Some(p) = &s.journal_probe {

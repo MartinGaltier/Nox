@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 /// File tray ("shelf") inside the island: files dropped on the island are
-/// kept by reference (paths only, no copies).
+/// kept by reference (paths only, no copies), in memory only.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ShelfItem {
     pub id: u64,
@@ -14,6 +14,11 @@ pub struct ShelfItem {
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FilesState {
     pub items: Vec<ShelfItem>,
+    /// A compression is running.
+    pub compressing: bool,
+    /// Outcome of the last action that can fail (compress, AirDrop…):
+    /// `Ok(message)` / `Err(reason)`, in French for display.
+    pub last_result: Option<Result<String, String>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -9,6 +9,7 @@ members = [
     "crates/nox-activities",
     "crates/nox-ui",
     "crates/nox-app",
+    "crates/nox-nowplaying",
 ]
 default-members = ["crates/nox-app", "crates/nox-helper"]
 

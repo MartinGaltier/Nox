@@ -10,7 +10,19 @@ rust-version.workspace = true
 nox-core.workspace = true
 log.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
+memchr = "2"
+rusqlite = "0.37"
+libc.workspace = true
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["NSString", "NSError"] }
+objc2-core-foundation = { workspace = true, features = ["CFCGTypes"] }
+objc2-core-graphics = { workspace = true, default-features = false, features = ["std", "CGBitmapContext", "CGColorSpace", "CGContext", "CGImage", "CGWindow", "CGEventSource", "CGEventTypes"] }
+objc2-screen-capture-kit = { version = "0.3", default-features = false, features = ["std", "SCScreenshotManager", "block2", "objc2-core-foundation", "objc2-core-graphics"] }
+block2.workspace = true
+objc2-app-kit = { workspace = true, default-features = false, features = ["std", "libc", "NSSound", "NSRunningApplication"] }
+security-framework = "3"
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
 
 [lints]
 workspace = true

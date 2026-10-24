@@ -1,3 +1,4 @@
+use crate::permissions::PermissionState;
 use crate::reading::Reading;
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +32,10 @@ pub struct Accessory {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AccessoriesState {
+    /// Bluetooth permission (IOBluetooth: AirPods parts, connection state).
+    /// HID batteries from IORegistry are listed even without it.
+    pub bluetooth: PermissionState,
+    /// Currently connected devices.
     pub devices: Vec<Accessory>,
 }
 
