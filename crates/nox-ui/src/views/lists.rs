@@ -7,7 +7,7 @@ use super::{
 use crate::format;
 use crate::geom::{Color, Rect};
 use crate::scene::{Action, Align, Scene, Weight};
-use nox_core::model::accessories::AccessoryKind;
+use nox_core::model::accessories::{AccessoryCommand, AccessoryKind};
 use nox_core::model::downloads::{DownloadCommand, DownloadStatus};
 use nox_core::model::files::FileCommand;
 use nox_core::model::notifications::NotificationCommand;
@@ -397,19 +397,45 @@ pub fn accessories(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     let Some(a) = cx.state.accessories.as_ref() else {
         return module_missing(s, r, Section::Accessories, enabled);
     };
-    let r = if matches!(
-        a.bluetooth,
-        PermissionState::Denied | PermissionState::Restricted
-    ) {
-        let (note, rest) = r.split_top(14.0, 6.0);
-        s.text(
-            note,
-            "Bluetooth refusé : batteries des appareils Bluetooth indisponibles.",
-            tertiary(10.0).color(Color::ORANGE),
-        );
-        rest
-    } else {
-        r
+    let r = match a.bluetooth {
+        // Only on an explicit click: the system prompt appears then.
+        PermissionState::NotDetermined => {
+            let (note, rest) = r.split_top(22.0, 6.0);
+            let (txt, btn) = note.split_right(170.0, 8.0);
+            s.text(
+                Rect::new(txt.x, txt.y + 4.0, txt.w, 14.0),
+                "Batteries Bluetooth : autorisation requise.",
+                tertiary(10.0),
+            );
+            pill(
+                s,
+                cx,
+                btn,
+                "Autoriser le Bluetooth…",
+                false,
+                Action::Send(Command::Accessories(AccessoryCommand::RequestBluetooth)),
+            );
+            rest
+        }
+        PermissionState::Denied | PermissionState::Restricted => {
+            let (note, rest) = r.split_top(22.0, 6.0);
+            let (txt, btn) = note.split_right(170.0, 8.0);
+            s.text(
+                Rect::new(txt.x, txt.y + 4.0, txt.w, 14.0),
+                "Bluetooth refusé : batteries Bluetooth indisponibles.",
+                tertiary(10.0).color(Color::ORANGE),
+            );
+            pill(
+                s,
+                cx,
+                btn,
+                "Ouvrir les Réglages Système",
+                false,
+                Action::OpenUrl(Permission::Bluetooth.settings_url().into()),
+            );
+            rest
+        }
+        _ => r,
     };
     let devices: Vec<_> = a.devices.iter().filter(|d| d.connected).collect();
     if devices.is_empty() {
@@ -607,5 +633,12 @@ mod tests {
         assert!(s.has_text("G 80\u{202F}%"));
         assert!(s.has_text("Boîtier 15\u{202F}% ⚡︎"));
         assert!(s.has_text("Batterie : Indisponible"));
+        let mut nd = st.clone();
+        nd.accessories.as_mut().unwrap().bluetooth = PermissionState::NotDetermined;
+        let mut s = Scene::default();
+        accessories(&mut s, &ctx(&nd, &settings), page_rect(), true);
+        assert!(s.actions().contains(&&Action::Send(Command::Accessories(
+            AccessoryCommand::RequestBluetooth
+        ))));
     }
 }
