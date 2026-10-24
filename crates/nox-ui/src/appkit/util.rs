@@ -8,8 +8,8 @@ use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::NSColor;
 use objc2_foundation::{
-    NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSPoint, NSRect,
-    NSRunLoop, NSRunLoopCommonModes, NSSize, NSTimer,
+    NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSOperationQueue,
+    NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSTimer,
 };
 use std::ptr::NonNull;
 
@@ -57,6 +57,11 @@ impl Timer {
     /// Fires once after `secs` (or repeatedly) on the main run loop, also
     /// while menus track or windows resize (common modes).
     pub fn new(secs: f64, repeats: bool, f: impl Fn() + 'static) -> Self {
+        // The timer is attached to the current run loop: main thread only.
+        assert!(
+            MainThreadMarker::new().is_some(),
+            "Timer::new must be called on the main thread"
+        );
         let block = RcBlock::new(move |_t: NonNull<NSTimer>| f());
         // SAFETY: the block is 'static and called on the main thread by the
         // run loop; the timer is invalidated before the closure can dangle.
@@ -103,10 +108,16 @@ impl Observer {
         f: impl Fn() + 'static,
     ) -> Self {
         let block = RcBlock::new(move |_n: NonNull<NSNotification>| f());
-        // SAFETY: queue = None delivers on the posting thread; every observed
-        // notification (screen, workspace, window) is posted on the main thread.
+        let queue = NSOperationQueue::mainQueue();
+        // SAFETY: the main operation queue runs the (non-Send) closure on the
+        // main thread whatever thread posts the notification.
         let token = unsafe {
-            center.addObserverForName_object_queue_usingBlock(Some(name), object, None, &block)
+            center.addObserverForName_object_queue_usingBlock(
+                Some(name),
+                object,
+                Some(&queue),
+                &block,
+            )
         };
         Self { center, token }
     }

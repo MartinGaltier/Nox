@@ -35,7 +35,7 @@ objc2-app-kit = { version = "0.3", default-features = false, features = [
     "NSPasteboard", "NSPopUpButton", "NSPopUpButtonCell", "NSResponder", "NSRunningApplication",
     "NSSavePanel", "NSScreen", "NSStackView", "NSStatusBar", "NSStatusBarButton", "NSStatusItem",
     "NSStringDrawing", "NSTabView", "NSTabViewItem", "NSText", "NSTextField", "NSTextFieldCell",
-    "NSTrackingArea", "NSUserInterfaceLayout", "NSView", "NSWindow", "NSWorkspace",
+    "NSTrackingArea", "NSTextView", "NSScrollView", "NSClipView", "NSTextStorage", "NSUserInterfaceLayout", "NSView", "NSWindow", "NSWorkspace",
 ] }
 
 [lints]

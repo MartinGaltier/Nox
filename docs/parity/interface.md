@@ -62,10 +62,21 @@ Référence : Vorssaint `e916961` (voir docs/REFERENCE.md). Statuts : **à faire
 | Accessoires | appareils connectés, batteries G/D/boîtier | vide / raison |
 | Surveillance | phase, cible, taille, dernier changement, choix du déclencheur → overlay de sélection → `WatchCommand::Start` | autorisation Enregistrement d’écran |
 | Caméra | calque hôte remis via `set_preview_host` (hôte puis Start ; Stop puis None), choix de caméra, erreur du module | autorisation / erreur (« caméra occupée »…) ; aperçu réel non testé (pas d’accès caméra pour l’agent) |
-| Raccourcis | actions rapides des réglages + raccourcis Raccourcis.app, dernier résultat | vide |
+| Raccourcis | contrôles volume/muet/luminosité/micro (RefreshControls à l’ouverture), actions rapides (corbeille confirmée, pas de « Ne pas déranger »), raccourcis Raccourcis.app, dernier résultat | contrôle absent grisé avec la raison |
+| Captures | vignettes réduites (jamais l’image pleine taille gardée en mémoire), ouvrir / afficher / copier l’image / corbeille, Refresh à l’ouverture | dossier refusé (Fichiers et dossiers) / « Aucune capture récente » |
+| Bloc-notes | NSTextView natif ; le panneau ne peut devenir clé que pendant l’édition et rend le clavier à l’app au premier plan ensuite ; SetText à chaque modification, texte jamais journalisé, Effacer confirmé | erreur d’écriture / texte tronqué affichés |
+| Presse-papiers | liste (aperçu, app source, taille), restaurer / retirer / tout effacer ; mémoire seulement | vide / module à venir |
 
 Fenêtre **Moniteur système** : cœurs P/E, GPU, capteurs, mémoire/pression/swap, batterie (santé, cycles,
 autonomie, flux), puissance, réseau (↓/↑ + historique), disques, ventilateurs — historiques bornés avec trous.
+
+## Revue croisée (activities, d856546) traitée
+
+* M1 overlay : l’app au premier plan est réactivée après le tracé ou Échap ; M4 : overlay `sharingType = none`.
+* M2/M3 : rendu via `LimitWindow::status` — reset estimé « ≈ … (estimé) », fenêtre réinitialisée « réinitialisée — en attente d’une nouvelle lecture », sans rafraîchissement.
+* F1 cycle Rc rompu à la fermeture de l’overlay, F2 curseur restauré, F3 plus de SetTrigger, F6 raisons complètes sur deux lignes, F7 tarifs/comptes/budget/forfait, F8 chevauchement corrigé.
+* F4/F11 : redessin différentiel (la scène est comparée à la précédente ; rien n’est invalidé si elle est identique, sinon seulement le rectangle modifié). Musique en lecture, égaliseur animé : 0,69 s CPU / 60 s en build debug.
+* F9/F10 : `Timer::new` exige le thread principal ; les observateurs passent par `NSOperationQueue.mainQueue`.
 
 ## Coordination
 

@@ -599,6 +599,14 @@ fn content(
         |s| s.music.lyrics_online,
         |s, v| s.music.lyrics_online = v,
     );
+    let purge = f.button("Purger le cache des paroles", || {
+        if let Some(a) = app::get() {
+            a.hub.send(Command::Music(
+                nox_core::model::music::MusicCommand::ClearLyricsCache,
+            ));
+        }
+    });
+    f.push(Retained::into_super(Retained::into_super(purge)));
     f.checkbox(
         "Inclure les autres lecteurs (navigateurs…)",
         |s| s.music.include_other_players,
@@ -707,6 +715,25 @@ fn activities(
         |s| s.timers.sound,
         |s, v| s.timers.sound = v,
     );
+    f.header("Captures et presse-papiers");
+    f.popup(
+        "Captures affichées",
+        num_options(&[6usize, 12, 24], ""),
+        |s| s.captures.max_items,
+        |s, v| s.captures.max_items = v,
+    );
+    f.popup(
+        "Historique du presse-papiers",
+        num_options(&[10usize, 20, 50], " éléments"),
+        |s| s.clipboard.max_items,
+        |s, v| s.clipboard.max_items = v,
+    );
+    f.checkbox(
+        "Garder aussi les images copiées",
+        |s| s.clipboard.capture_images,
+        |s, v| s.clipboard.capture_images = v,
+    );
+    f.note("L’historique reste en mémoire, n’est jamais écrit sur disque, et ignore les gestionnaires de mots de passe.");
     f.header("Accessoires");
     f.checkbox(
         "Alerte à la connexion",

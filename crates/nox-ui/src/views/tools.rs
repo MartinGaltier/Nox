@@ -69,16 +69,18 @@ pub fn watch(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     if let Some(d) = w.last_diff {
         detail.push(format!("écart {}", format::percent(d * 100.0)));
     }
-    s.text(
-        Rect::new(inner.x + 34.0, inner.y + 19.0, inner.w - 140.0, 14.0),
-        detail.join(" · "),
-        secondary(10.5),
-    );
-    if let Some(e) = &w.error {
+    if w.error.is_none() {
         s.text(
             Rect::new(inner.x + 34.0, inner.y + 19.0, inner.w - 140.0, 14.0),
+            detail.join(" · "),
+            secondary(10.5),
+        );
+    }
+    if let Some(e) = &w.error {
+        s.text(
+            Rect::new(inner.x + 34.0, inner.y + 19.0, inner.w - 140.0, 28.0),
             e,
-            secondary(10.5).color(Color::ORANGE),
+            secondary(10.5).color(Color::ORANGE).lines(2),
         );
     }
     let active = matches!(
