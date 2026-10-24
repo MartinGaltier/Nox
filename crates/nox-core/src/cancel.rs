@@ -3,7 +3,7 @@
 //! Modules must never leave threads running after `stop()`. `Worker` joins its
 //! thread on `stop()` and on drop.
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Condvar, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -16,6 +16,10 @@ pub struct CancelToken {
 #[derive(Default)]
 struct Inner {
     cancelled: AtomicBool,
+    nudges: AtomicU64,
+    /// Last nudge count consumed by `sleep` (nudges issued while not
+    /// sleeping are kept, not lost).
+    consumed: AtomicU64,
     lock: Mutex<()>,
     cv: Condvar,
 }
@@ -33,12 +37,17 @@ impl CancelToken {
         self.inner.cancelled.load(Ordering::SeqCst)
     }
     /// Sleeps up to `dur`; returns `true` if cancelled (caller should exit).
+    /// Returns `false` early when [`CancelToken::nudge`] is called meanwhile.
     pub fn sleep(&self, dur: Duration) -> bool {
         let deadline = Instant::now() + dur;
         let mut g = self.inner.lock.lock().unwrap_or_else(|e| e.into_inner());
         loop {
             if self.is_cancelled() {
                 return true;
+            }
+            let n = self.inner.nudges.load(Ordering::SeqCst);
+            if n != self.inner.consumed.swap(n, Ordering::SeqCst) {
+                return false;
             }
             let now = Instant::now();
             if now >= deadline {
@@ -50,9 +59,11 @@ impl CancelToken {
             };
         }
     }
-    /// Wakes sleepers without cancelling (used to apply a new interval now).
+    /// Wakes sleepers without cancelling (used to apply a new interval now):
+    /// a pending `sleep` returns `false` immediately.
     pub fn nudge(&self) {
         let _g = self.inner.lock.lock().unwrap_or_else(|e| e.into_inner());
+        self.inner.nudges.fetch_add(1, Ordering::SeqCst);
         self.inner.cv.notify_all();
     }
 }
@@ -156,5 +167,32 @@ mod tests {
         });
         assert!(t.sleep(Duration::from_secs(5)));
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn nudge_before_sleep_is_not_lost() {
+        let t = CancelToken::new();
+        t.nudge();
+        let start = Instant::now();
+        assert!(!t.sleep(Duration::from_secs(5)));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // Consumed: the next sleep runs to its deadline.
+        let start = Instant::now();
+        assert!(!t.sleep(Duration::from_millis(30)));
+        assert!(start.elapsed() >= Duration::from_millis(30));
+    }
+
+    #[test]
+    fn nudge_ends_sleep_without_cancelling() {
+        let t = CancelToken::new();
+        let t2 = t.clone();
+        let start = Instant::now();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(10));
+            t2.nudge();
+        });
+        assert!(!t.sleep(Duration::from_secs(5)));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        assert!(!t.is_cancelled());
     }
 }

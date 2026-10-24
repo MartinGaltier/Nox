@@ -15,6 +15,7 @@ pub enum AlertPriority {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AlertKind {
     DownloadFinished,
+    TrackChanged,
     AgentFinished,
     AgentNeedsInput,
     AgentLimit,
