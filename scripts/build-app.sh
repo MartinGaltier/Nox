@@ -23,7 +23,8 @@ for extra in nox-nowplaying; do
     cargo build "${flags[@]}" -p "$extra"
   fi
 done
-OUT="$ROOT/target/$TARGET/$PROFILE"
+TARGET_DIR="$(cargo metadata --no-deps --format-version 1 | python3 -c 'import json,sys; print(json.load(sys.stdin)["target_directory"])')"
+OUT="$TARGET_DIR/$TARGET/$PROFILE"
 
 echo "==> assembling $APP"
 rm -rf "$APP"

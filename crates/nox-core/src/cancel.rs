@@ -17,6 +17,9 @@ pub struct CancelToken {
 struct Inner {
     cancelled: AtomicBool,
     nudges: AtomicU64,
+    /// Last nudge count consumed by `sleep` (nudges issued while not
+    /// sleeping are kept, not lost).
+    consumed: AtomicU64,
     lock: Mutex<()>,
     cv: Condvar,
 }
@@ -38,12 +41,12 @@ impl CancelToken {
     pub fn sleep(&self, dur: Duration) -> bool {
         let deadline = Instant::now() + dur;
         let mut g = self.inner.lock.lock().unwrap_or_else(|e| e.into_inner());
-        let nudges = self.inner.nudges.load(Ordering::SeqCst);
         loop {
             if self.is_cancelled() {
                 return true;
             }
-            if self.inner.nudges.load(Ordering::SeqCst) != nudges {
+            let n = self.inner.nudges.load(Ordering::SeqCst);
+            if n != self.inner.consumed.swap(n, Ordering::SeqCst) {
                 return false;
             }
             let now = Instant::now();
@@ -164,6 +167,19 @@ mod tests {
         });
         assert!(t.sleep(Duration::from_secs(5)));
         assert!(start.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn nudge_before_sleep_is_not_lost() {
+        let t = CancelToken::new();
+        t.nudge();
+        let start = Instant::now();
+        assert!(!t.sleep(Duration::from_secs(5)));
+        assert!(start.elapsed() < Duration::from_secs(1));
+        // Consumed: the next sleep runs to its deadline.
+        let start = Instant::now();
+        assert!(!t.sleep(Duration::from_millis(30)));
+        assert!(start.elapsed() >= Duration::from_millis(30));
     }
 
     #[test]
