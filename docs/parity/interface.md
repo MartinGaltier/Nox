@@ -25,11 +25,11 @@ Référence : Vorssaint `e916961` (voir docs/REFERENCE.md). Statuts : **à faire
 
 | ID | Fonction | Implémentation Nox | Vérification automatique | Statut |
 |---|---|---|---|---|
-| A1 | Fenêtre îlot dans l’encoche | `NSPanel` borderless + `NonactivatingPanel`, niveau `NSStatusWindowLevel + 1`, `canJoinAllSpaces | stationary | fullScreenAuxiliary | ignoresCycle`, fond transparent, silhouette noire (épaules + coins, adaptée de `NotchShape`), ombre uniquement déplié ; géométrie via `safeAreaInsets` + `auxiliaryTopLeft/RightArea` | `geometry::tests::notched_display_centres_on_camera` (M2 : 185×32 centré, collé au bord haut) | implémentée — capture réelle en attente (disque plein, voir Limites) |
+| A1 | Fenêtre îlot dans l’encoche | `NSPanel` borderless + `NonactivatingPanel`, niveau `NSStatusWindowLevel + 1`, `canJoinAllSpaces | stationary | fullScreenAuxiliary | ignoresCycle`, fond transparent, silhouette noire (épaules + coins, adaptée de `NotchShape`), ombre uniquement déplié ; géométrie via `safeAreaInsets` + `auxiliaryTopLeft/RightArea` | `geometry::tests::notched_display_centres_on_camera` (M2 : 185×32 centré, collé au bord haut) | implémentée — géométrie vérifiée sur le M2 réel (`NSScreen` 1280×832 pt, encoche 562→718, panneau 516→764 × 804→832, collé au bord) ; superposition physique non capturable (voir Limites) |
 | A2 | États compact / déplié | `machine::Machine` + `island::IslandModel::decide` (repos, bande d’activité, alerte, page) | `machine::tests::*`, `island::tests::hover_expands_*` | implémentée |
 | A3 | Survol, délai, clic | Zone de suivi limitée à la forme (`island_contains`), `hover_delay_ms`, `close_delay_ms`, clic = ouvrir ; réglages appliqués à chaud (`Machine::configure`) | `machine::tests::*` | implémentée |
-| A4 | Animations | Ressort Rust (`spring::IslandMotion`), minuteur actif seulement pendant l’animation ; fondu contenu compact ↔ page | `spring::tests::*`, `island::tests::rest_is_exactly_the_camera…` | implémentée — CPU au repos à mesurer |
-| A5 | Aucun vol de focus | `canBecomeKeyWindow`/`canBecomeMainWindow` = NO, panneau non activant, `acceptsFirstMouse` | — | implémentée — test physique à faire |
+| A4 | Animations | Ressort Rust (`spring::IslandMotion`), minuteur actif seulement pendant l’animation ; fondu contenu compact ↔ page | `spring::tests::*`, `island::tests::rest_is_exactly_the_camera…` | testée (coût au repos) : build release, modules coupés : 0,00 s CPU sur 120 s et 0 réveil (`ps`/`top`) ; îlot forcé déplié : 0,00 s sur 60 s ; avec modules réels : 0,17 s/120 s (collecteur metrics) |
+| A5 | Aucun vol de focus | `canBecomeKeyWindow`/`canBecomeMainWindow` = NO, panneau non activant, `acceptsFirstMouse` | propriétés lues dans l’app réelle : `canBecomeKey=false canBecomeMain=false isKey=false nonactivating=true`, app jamais active, app au premier plan inchangée à l’ouverture | implémentée — clic physique non testé (pas d’entrée synthétique) |
 | A6 | Écrans sans encoche | Capsule dans la barre ou encoche suspendue (`IslandSettings.silhouette`), rien au repos si `simulate_notch` = false ; choix d’écran `DisplayChoice` | `geometry::tests::external_display_simulates_or_hides` | implémentée |
 | A7 | Changement d’écran | `NSApplicationDidChangeScreenParametersNotification` → nouvelle géométrie, sans animation entre écrans | — | implémentée |
 | A8 | Plein écran | Liste des fenêtres de l’app au premier plan (sans titres : aucune permission) ; masqué si une fenêtre couvre tout l’écran de l’îlot ; recalcul sur changement d’espace / d’app active (pas de sondage) | `screens::tests::coverage_rules` | implémentée |
@@ -82,7 +82,17 @@ autonomie, flux), puissance, réseau (↓/↑ + historique), disques, ventilateu
 `packaging/AppIcon.icns` est originale : générée par `crates/nox-ui/assets/make_icon.py`
 (`python3 -I make_icon.py icon_1024.png`, puis `sips -z` aux tailles d’un `.iconset` et `iconutil -c icns`).
 
+## Vérification réelle (MacBook Air M2, macOS 27.0)
+
+* Rendu : captures internes debug (`NOX_UI_SNAPSHOT`, `cacheDisplayInRect`) de la bande compacte (musique) et de toutes les pages dépliées, du moniteur avec les **vraies** mesures du module metrics (8 cœurs E/P, santé batterie « estimé », puissances CPU/ANE « Indisponible », capteurs, disque) et du maintien éveillé avec le vrai module power.
+* Réglages : rapport de mise en page (5 onglets, 152 contrôles, aucun hors de la zone visible de 714 pt).
+* Release : aucune chaîne de fixture ni de hook debug dans le binaire (`strings`).
+
 ## Limites
+
+* `screencapture` échoue (« could not create image from display ») : le processus de l’agent n’a pas l’autorisation Enregistrement de l’écran. Les captures internes ne montrent pas l’îlot superposé à la vraie encoche : à valider à l’œil.
+* Aucune entrée synthétique possible (Accessibilité non accordée) : survol, clic, balayage, glisser-déposer et overlay de sélection ne sont couverts que par les tests unitaires.
+* Le texte des contrôles standard de la fenêtre Réglages n’est pas rendu hors écran : vérifiée par rapport de mise en page, pas visuellement.
 
 * A18 (écran verrouillé) non implémenté : demande une API privée.
 * La détection plein écran assimile une fenêtre « zoomée » sous une barre des menus masquée à un plein écran.
