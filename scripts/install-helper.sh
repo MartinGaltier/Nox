@@ -29,10 +29,6 @@ if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
 fi
 [ -x "$CLIENT" ] || { echo "install-helper.sh: $CLIENT not found" >&2; exit 66; }
 
-# Stop a previous helper first. On SIGTERM it restores lid sleep if it had
-# changed it (and its journal is replayed by the new one otherwise).
-launchctl bootout "system/$LABEL" 2>/dev/null || true
-
 install -d -o root -g wheel -m 0755 /Library/PrivilegedHelperTools
 install -d -o root -g wheel -m 0755 "$STATE_DIR" "$LOG_DIR"
 # Copy first, then verify the root-owned copy: checking "$SRC" and copying it
@@ -47,6 +43,10 @@ if ! codesign --verify --strict -R="identifier \"$LABEL\"" "$TMP"; then
   exit 65
 fi
 chmod 0755 "$TMP"
+# Only now stop a previous helper, so a failed verification above leaves it
+# running. On SIGTERM it restores lid sleep if it had changed it (and its
+# journal is replayed by the new one otherwise).
+launchctl bootout "system/$LABEL" 2>/dev/null || true
 mv -f "$TMP" "$DST"
 # From here on only the verified root-owned copy "$DST" is executed.
 
