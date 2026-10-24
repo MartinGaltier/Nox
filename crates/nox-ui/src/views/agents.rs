@@ -5,8 +5,8 @@ use super::{Ctx, ListLayout, bar, empty, label, module_missing, secondary, terti
 use crate::format;
 use crate::geom::{Color, Rect};
 use crate::scene::{Action, Align, Scene, Weight};
-use nox_core::model::agents::{AgentCommand, ProviderStatus, SessionPhase};
-use nox_core::{Command, Reading, Section};
+use nox_core::model::agents::{AgentCommand, AgentPeriod, ProviderStatus, SessionPhase};
+use nox_core::{Command, Reading, Section, Unavailable};
 
 pub fn tokens(n: u64) -> String {
     let v = n as f64;
@@ -57,6 +57,23 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             "Claude Code, Codex, OpenCode et Copilot sont lus depuis leurs journaux locaux.",
         );
     }
+    let r = match &a.budget {
+        Some(b) => {
+            let (line, rest) = r.split_top(14.0, 6.0);
+            let spent = format::reading(&b.spent_today_usd, |v| format::decimal(*v, 2));
+            let over = b.spent_today_usd.value().is_some_and(|v| *v > b.daily_usd);
+            s.text(
+                line,
+                format!(
+                    "Budget du jour : {spent} $ sur {} $ (estimé)",
+                    format::decimal(b.daily_usd, 2)
+                ),
+                tertiary(10.0).color(if over { Color::ORANGE } else { Color::TERTIARY }),
+            );
+            rest
+        }
+        None => r,
+    };
     let mut list = ListLayout::begin(s, r, cx.scroll);
     for p in shown {
         let h = card_height(p);
@@ -65,21 +82,39 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         };
         s.fill(c, 12.0, Color::CARD);
         let inner = c.inset(12.0, 9.0);
+        let title = match &p.plan {
+            Some(plan) => format!("{} · {plan}", p.provider.label()),
+            None => p.provider.label().to_string(),
+        };
         s.text(
             Rect::new(inner.x, inner.y, inner.w * 0.5, 16.0),
-            p.provider.label(),
+            title,
             label(13.0).weight(Weight::Semibold),
         );
         // Tokens + cost on the right of the title.
-        let tok = format::reading(&p.tokens_today, |t| {
-            format!("{} jetons aujourd’hui", tokens(t.total()))
-        });
-        let cost = match &p.cost_today_usd {
+        // Totals for the selected period (today by default).
+        let (tok_r, cost_r, period) = match a.period {
+            AgentPeriod::Today => (
+                &p.tokens_today,
+                &p.cost_today_usd,
+                "aujourd’hui".to_string(),
+            ),
+            other => (
+                &p.tokens_period,
+                &p.cost_period_usd,
+                format!("sur {}", other.label_fr()),
+            ),
+        };
+        let tok = format::reading(tok_r, |t| format!("{} jetons {period}", tokens(t.total())));
+        let mut cost = match cost_r {
             Reading::Measured(v) | Reading::Estimated(v) => {
                 format!("≈ {} $ (estimé)", format::decimal(*v, 2))
             }
             Reading::Unavailable(u) => format!("coût : {}", format::unavailable(u)),
         };
+        if p.unpriced_requests > 0 {
+            cost.push_str(&format!(" · {} sans tarif", p.unpriced_requests));
+        }
         s.text(
             Rect::new(inner.x + inner.w * 0.4, inner.y, inner.w * 0.6, 14.0),
             tok,
@@ -150,14 +185,24 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                         used.map(|u| u / 100.0),
                         color,
                     );
-                    let mut t = format::reading(&l.used_percent, |u| {
-                        format!("{} utilisés", format::percent(*u))
-                    });
+                    // A window whose reset passed but has no new sample is
+                    // unknown: "…", never 0 %.
+                    let reset_passed = l.resets_at.is_some_and(|r| r <= cx.now);
+                    let mut t = match &l.used_percent {
+                        Reading::Unavailable(Unavailable::Pending) if reset_passed => {
+                            "… (fenêtre réinitialisée)".to_string()
+                        }
+                        r => format::reading(r, |u| format!("{} utilisés", format::percent(*u))),
+                    };
                     if est && !t.contains("estimé") {
                         t.push_str(" (estimé)");
                     }
-                    if let Some(reset) = l.resets_at {
-                        t.push_str(&format!(" · reset {}", format::relative(reset, cx.now)));
+                    if let Some(reset) = l.resets_at.filter(|r| *r > cx.now) {
+                        let approx = if l.resets_estimated { "≈ " } else { "" };
+                        t.push_str(&format!(
+                            " · reset {approx}{}",
+                            format::relative(reset, cx.now)
+                        ));
                         s.refresh_in(60.0);
                     }
                     s.text(txt_r, t, tertiary(10.0).align(Align::Right));
@@ -193,7 +238,7 @@ mod tests {
     use nox_core::model::agents::{
         AgentProvider, AgentSession, AgentsState, LimitWindow, TokenUsage,
     };
-    use nox_core::{IslandState, Settings, Unavailable};
+    use nox_core::{IslandState, Settings};
 
     #[test]
     fn card_marks_estimates_and_unavailable() {

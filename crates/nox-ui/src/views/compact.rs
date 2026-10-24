@@ -10,7 +10,7 @@ use crate::geometry::{NotchGeometry, shoulder};
 use crate::scene::{Action, Align, Op, Scene, Weight};
 use nox_core::Alert;
 use nox_core::model::agents::AgentProvider;
-use nox_core::model::companion::CompanionMood;
+use nox_core::model::companion::{CompanionMood, CompanionSettings, CompanionSide};
 use nox_core::model::timers::FocusPhase;
 use nox_core::{AlertKind, Section};
 
@@ -59,7 +59,7 @@ pub fn strip(
     size: Size,
     activity: &Activity,
     now: f64,
-    companion_character: &str,
+    look: &CompanionSettings,
 ) {
     let (l, r) = wings(g, size);
     let icon = |s: &mut Scene, rect: Rect, name: &str, color: Color| {
@@ -211,15 +211,13 @@ pub fn strip(
             icon(s, l, sym, col);
             value(s, r, format::percent(*percent), col);
         }
-        Activity::Companion { mood, .. } => {
+        Activity::Companion { mood, reacting, .. } => {
             let d = (size.h - 6.0).min(26.0);
-            companion(
-                s,
-                Rect::new(l.x, l.mid_y() - d / 2.0, d, d),
-                *mood,
-                companion_character,
-                now,
-            );
+            let at = match look.side {
+                CompanionSide::Left => Rect::new(l.x, l.mid_y() - d / 2.0, d, d),
+                CompanionSide::Right => Rect::new(r.max_x() - d, r.mid_y() - d / 2.0, d, d),
+            };
+            companion(s, at, *mood, look, *reacting, now);
         }
     }
 }
@@ -330,17 +328,39 @@ fn mood_color(m: CompanionMood) -> Color {
     }
 }
 
+/// Body colour of a palette name; unknown names fall back to the mood colour.
+pub fn palette_color(name: &str) -> Option<Color> {
+    Some(match name {
+        "pearl" => Color::rgba(0.93, 0.93, 0.96, 1.0),
+        "lemon" => Color::rgba(1.0, 0.92, 0.45, 1.0),
+        "peach" => Color::rgba(1.0, 0.76, 0.60, 1.0),
+        "rose" => Color::rgba(1.0, 0.62, 0.74, 1.0),
+        "lilac" => Color::rgba(0.79, 0.69, 1.0, 1.0),
+        "sky" => Color::rgba(0.56, 0.78, 1.0, 1.0),
+        "mint" => Color::rgba(0.56, 0.92, 0.76, 1.0),
+        _ => return None,
+    })
+}
+
 /// Original companion drawn from primitives; bounces only when the mood is
-/// lively (and then asks for a 10 Hz refresh).
-pub fn companion(s: &mut Scene, r: Rect, mood: CompanionMood, character: &str, now: f64) {
-    let lively = matches!(mood, CompanionMood::Dancing | CompanionMood::Celebrating);
+/// lively or a reaction plays (and then asks for a short refresh).
+pub fn companion(
+    s: &mut Scene,
+    r: Rect,
+    mood: CompanionMood,
+    look: &CompanionSettings,
+    reacting: bool,
+    now: f64,
+) {
+    let character = look.character.as_str();
+    let lively = reacting || matches!(mood, CompanionMood::Dancing | CompanionMood::Celebrating);
     let bounce = if lively {
-        s.refresh_in(0.1);
+        s.refresh_in(if reacting { 1.0 / 30.0 } else { 0.1 });
         -((now * 7.0).sin().abs()) * r.h * 0.12
     } else {
         0.0
     };
-    let c = mood_color(mood);
+    let c = palette_color(&look.palette).unwrap_or_else(|| mood_color(mood));
     let body = Rect::new(r.x, r.y + r.h * 0.12 + bounce, r.w, r.h * 0.86);
     match character {
         "ghost" => {
@@ -483,7 +503,7 @@ mod tests {
                 focus: None,
             },
             0.0,
-            "blob",
+            &CompanionSettings::default(),
         );
         assert!(s.has_text("1:16"));
         assert!(s.refresh.is_some());
@@ -502,7 +522,7 @@ mod tests {
                 remaining: None,
             },
             0.0,
-            "blob",
+            &CompanionSettings::default(),
         );
         assert_eq!(s.refresh, None);
         assert!(s.has_text("∞"));
@@ -521,23 +541,25 @@ mod tests {
 
     #[test]
     fn companion_animates_only_when_lively() {
+        let r = Rect::new(0.0, 0.0, 24.0, 24.0);
+        let cat = CompanionSettings {
+            character: "cat".into(),
+            ..Default::default()
+        };
         let mut s = Scene::default();
-        companion(
-            &mut s,
-            Rect::new(0.0, 0.0, 24.0, 24.0),
-            CompanionMood::Sleepy,
-            "cat",
-            0.0,
-        );
+        companion(&mut s, r, CompanionMood::Sleepy, &cat, false, 0.0);
         assert_eq!(s.refresh, None);
+        let ghost = CompanionSettings {
+            character: "ghost".into(),
+            palette: "mint".into(),
+            ..Default::default()
+        };
         let mut s = Scene::default();
-        companion(
-            &mut s,
-            Rect::new(0.0, 0.0, 24.0, 24.0),
-            CompanionMood::Dancing,
-            "ghost",
-            0.0,
-        );
+        companion(&mut s, r, CompanionMood::Dancing, &ghost, false, 0.0);
         assert_eq!(s.refresh, Some(0.1));
+        let mut s = Scene::default();
+        companion(&mut s, r, CompanionMood::Idle, &ghost, true, 0.0);
+        assert!(s.refresh.is_some_and(|x| x < 0.1), "a reaction animates");
+        assert!(palette_color("mint").is_some() && palette_color("???").is_none());
     }
 }

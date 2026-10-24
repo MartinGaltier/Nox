@@ -167,7 +167,7 @@ impl IslandModel {
                         size,
                         a,
                         now,
-                        &settings.companion.character,
+                        &settings.companion,
                     );
                     s.hit(
                         crate::geom::Rect::new(0.0, 0.0, size.w, size.h),

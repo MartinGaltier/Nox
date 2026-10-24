@@ -53,6 +53,8 @@ pub enum Activity {
     Companion {
         mood: CompanionMood,
         caption: Option<String>,
+        /// A one-shot reaction is playing (bounce for a moment).
+        reacting: bool,
     },
 }
 
@@ -230,9 +232,14 @@ pub fn select(state: &IslandState, settings: &Settings, now: f64) -> Option<Acti
         && let Some(c) = &state.companion
         && c.mood != CompanionMood::Idle
     {
+        let reacting = settings.companion.reactions
+            && c.reaction
+                .as_ref()
+                .is_some_and(|r| (0.0..1.5).contains(&(now - r.at)));
         return Some(Activity::Companion {
             mood: c.mood,
             caption: c.caption.clone(),
+            reacting,
         });
     }
 
