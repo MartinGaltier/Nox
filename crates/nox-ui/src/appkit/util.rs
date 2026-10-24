@@ -108,9 +108,9 @@ impl Observer {
         f: impl Fn() + 'static,
     ) -> Self {
         let block = RcBlock::new(move |_n: NonNull<NSNotification>| f());
+        let queue = NSOperationQueue::mainQueue();
         // SAFETY: the main operation queue runs the (non-Send) closure on the
         // main thread whatever thread posts the notification.
-        let queue = NSOperationQueue::mainQueue();
         let token = unsafe {
             center.addObserverForName_object_queue_usingBlock(
                 Some(name),
