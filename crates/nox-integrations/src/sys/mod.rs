@@ -9,6 +9,7 @@ pub mod display;
 pub mod eventkit;
 pub mod fsevents;
 pub mod http;
+pub mod keyboard;
 pub mod peripherals;
 pub mod prefs;
 pub mod progress;

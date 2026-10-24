@@ -131,6 +131,7 @@ enum Job {
     SetShuffle(u64, Player, bool),
     SetRepeat(u64, Player, RepeatMode),
     Open(Option<i32>, Option<String>),
+    Transport(u64, Player, String, Option<f64>),
 }
 
 enum JobResult {
@@ -171,6 +172,12 @@ fn run_job(job: Job, out: &Sender<JobResult>) {
         Job::SetRepeat(g, p, mode) => {
             if let Err(e) = automation::set_repeat(p, mode) {
                 log::info!("music: set repeat failed: {e}");
+            }
+            JobResult::PlayerState(g, automation::read_state(p))
+        }
+        Job::Transport(g, p, cmd, pos) => {
+            if let Err(e) = automation::transport(p, &cmd, pos) {
+                log::info!("music: AppleScript {cmd} failed: {e}");
             }
             JobResult::PlayerState(g, automation::read_state(p))
         }
@@ -216,6 +223,8 @@ struct Engine {
     generation: u64,
     last_line: Option<StateLine>,
     artwork_cache: ArtworkCache,
+    /// Last transport command sent (for the AppleScript fallback).
+    last_transport: Option<(String, Option<f64>)>,
     jobs: Option<Sender<Job>>,
     results: Receiver<JobResult>,
     results_tx: Sender<JobResult>,
@@ -242,6 +251,7 @@ impl Engine {
             generation: 0,
             last_line: None,
             artwork_cache: None,
+            last_transport: None,
             jobs: None,
             results,
             results_tx,
@@ -265,10 +275,24 @@ impl Engine {
                     log::info!("music: adapter started (pid {})", a.pid());
                     self.adapter = Some(a);
                     self.launched_at = Some(Instant::now());
+                    self.send_config();
                 }
                 Err(e) => self.fail(Unavailable::Error(format!("perl: {e}"))),
             },
             Err(e) => self.fail(Unavailable::SourceMissing(e)),
+        }
+    }
+
+    /// Player selection preferences for the adapter (B9).
+    fn send_config(&mut self) {
+        let v = json!({
+            "cmd": "config",
+            "preferred": self.settings.preferred_player,
+            "include_other": self.settings.include_other_players,
+        });
+        if let Some(a) = self.adapter.as_mut() {
+            a.request(&v);
+            a.request(&json!({"cmd": "refresh"}));
         }
     }
 
@@ -379,9 +403,19 @@ impl Engine {
                 }
             }
             Event::Line(Line::State(line)) => self.on_state(*line),
-            Event::Line(Line::Sent { cmd, ok }) => {
-                if !ok {
-                    log::info!("music: command {cmd} not delivered");
+            Event::Line(Line::Sent { cmd, ok, direct }) => {
+                if ok {
+                    return;
+                }
+                // MediaRemote refused a command for a followed player that is
+                // not the system's current one: Music/Spotify still obey
+                // their AppleScript (the user just pressed the button).
+                match (direct, self.player(), self.last_transport.take()) {
+                    (true, Some(p), Some((c, pos))) if c == cmd => {
+                        let g = self.generation;
+                        self.submit(Job::Transport(g, p, c, pos));
+                    }
+                    _ => log::info!("music: command {cmd} not delivered"),
                 }
             }
             Event::Line(Line::Error { message }) => log::info!("music: adapter: {message}"),
@@ -416,6 +450,18 @@ impl Engine {
         let changed = self.track.as_ref() != Some(&id);
         let playing = np.playing;
         self.state.now_playing = Some(np);
+        self.state.players = line
+            .sources
+            .iter()
+            .map(|s| PlayerInfo {
+                bundle_id: s.bundle_id.clone(),
+                name: s
+                    .name
+                    .clone()
+                    .or_else(|| workspace::app_name(s.pid))
+                    .unwrap_or_else(|| s.bundle_id.clone()),
+            })
+            .collect();
         self.last_line = Some(line);
         if changed {
             let first = self.track.is_none();
@@ -553,6 +599,15 @@ impl Engine {
     }
 
     fn request(&mut self, v: serde_json::Value) {
+        if let Some(cmd) = v.get("cmd").and_then(|c| c.as_str())
+            && matches!(
+                cmd,
+                "play" | "pause" | "toggle" | "next" | "previous" | "seek"
+            )
+        {
+            self.last_transport =
+                Some((cmd.to_owned(), v.get("position").and_then(|p| p.as_f64())));
+        }
         let delivered = self.adapter.as_mut().is_some_and(|a| a.request(&v));
         if !delivered {
             log::info!("music: command dropped (adapter not running)");
@@ -602,6 +657,8 @@ impl Engine {
     }
 
     fn on_settings(&mut self, s: MusicSettings) {
+        let selection_changed = s.preferred_player != self.settings.preferred_player
+            || s.include_other_players != self.settings.include_other_players;
         if self.settings.lyrics && !s.lyrics {
             lyrics::clear_cache(&lyrics::cache_dir());
         }
@@ -610,6 +667,9 @@ impl Engine {
             || s.queue != self.settings.queue
             || s.include_other_players != self.settings.include_other_players;
         self.settings = s;
+        if selection_changed {
+            self.send_config();
+        }
         if refetch {
             // Re-evaluate the current track with the new settings.
             self.track = None;
@@ -622,12 +682,12 @@ impl Engine {
     }
 }
 
-/// Maps an adapter line to the shared model, keeping the previous artwork
-/// bytes when only their id was re-sent.
 /// Last artwork bytes received, by id (the adapter sends bytes only when
 /// the id changes).
 type ArtworkCache = Option<(u64, Arc<Vec<u8>>)>;
 
+/// Maps an adapter line to the shared model, keeping the previous artwork
+/// bytes when only their id was re-sent.
 fn to_now_playing(
     line: &StateLine,
     previous: Option<&NowPlaying>,
