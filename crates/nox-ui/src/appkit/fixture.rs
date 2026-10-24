@@ -57,8 +57,8 @@ pub fn overlay(s: &mut IslandState, now: f64) {
                     .collect(),
                 source: "aperçu".into(),
             }),
-            levels: vec![],
-            levels_measured: false,
+            // `levels` and fields added later (e.g. `players`) take defaults.
+            ..Default::default()
         });
     }
     if s.calendar.is_none() {
