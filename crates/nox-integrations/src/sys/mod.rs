@@ -7,6 +7,7 @@ pub mod eventkit;
 pub mod fsevents;
 pub mod http;
 pub mod progress;
+pub mod system;
 pub mod workspace;
 
 use std::time::Duration;

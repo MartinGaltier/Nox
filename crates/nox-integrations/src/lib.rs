@@ -8,6 +8,7 @@ pub mod camera;
 pub mod downloads;
 pub mod files;
 pub mod music;
+pub mod shortcuts;
 pub mod sys;
 pub mod util;
 
@@ -20,15 +21,12 @@ pub fn modules() -> Vec<Box<dyn Module>> {
         Box::new(camera::CameraModule::default()),
         Box::new(downloads::DownloadsModule::default()),
         Box::new(files::FilesModule::default()),
+        Box::new(shortcuts::ShortcutsModule::default()),
     ];
     v.extend(
-        [
-            ModuleId::Notifications,
-            ModuleId::Accessories,
-            ModuleId::Shortcuts,
-        ]
-        .into_iter()
-        .map(todo_module::Placeholder::boxed),
+        [ModuleId::Notifications, ModuleId::Accessories]
+            .into_iter()
+            .map(todo_module::Placeholder::boxed),
     );
     v
 }
