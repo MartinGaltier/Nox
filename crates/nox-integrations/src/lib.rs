@@ -3,6 +3,7 @@
 
 use nox_core::{Module, ModuleId};
 
+pub mod calendar;
 pub mod music;
 pub mod sys;
 pub mod util;
@@ -10,10 +11,12 @@ pub mod util;
 mod todo_module;
 
 pub fn modules() -> Vec<Box<dyn Module>> {
-    let mut v: Vec<Box<dyn Module>> = vec![Box::new(music::MusicModule::default())];
+    let mut v: Vec<Box<dyn Module>> = vec![
+        Box::new(music::MusicModule::default()),
+        Box::new(calendar::CalendarModule::default()),
+    ];
     v.extend(
         [
-            ModuleId::Calendar,
             ModuleId::Notifications,
             ModuleId::Accessories,
             ModuleId::Downloads,
