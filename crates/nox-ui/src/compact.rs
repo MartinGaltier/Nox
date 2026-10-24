@@ -194,7 +194,7 @@ pub fn select(state: &IslandState, settings: &Settings, now: f64) -> Option<Acti
     {
         return Some(Activity::KeepAwake {
             mode: s.mode,
-            remaining: s.ends_at.map(|e| (e - now).max(0.0)),
+            remaining: s.remaining_secs(now),
         });
     }
 
@@ -326,6 +326,7 @@ mod tests {
             power: Some(PowerState {
                 active: Some(KeepAwakeSession {
                     mode: KeepAwakeMode::System,
+                    duration: nox_core::model::power::KeepAwakeDuration::Minutes(10),
                     started_at: 0.0,
                     ends_at: Some(600.0),
                 }),

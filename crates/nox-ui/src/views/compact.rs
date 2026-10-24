@@ -11,7 +11,6 @@ use crate::scene::{Action, Align, Op, Scene, Weight};
 use nox_core::Alert;
 use nox_core::model::agents::AgentProvider;
 use nox_core::model::companion::CompanionMood;
-use nox_core::model::power::KeepAwakeMode;
 use nox_core::model::timers::FocusPhase;
 use nox_core::{AlertKind, Section};
 
@@ -171,11 +170,7 @@ pub fn strip(
             }
         }
         Activity::KeepAwake { mode, remaining } => {
-            let sym = match mode {
-                KeepAwakeMode::ClosedLid => "laptopcomputer",
-                _ => "cup.and.saucer.fill",
-            };
-            icon(s, l, sym, Color::ORANGE);
+            icon(s, l, mode.symbol(), Color::ORANGE);
             let t = match remaining {
                 Some(rem) => format::duration(*rem),
                 None => "∞".into(),
@@ -442,6 +437,7 @@ pub fn companion_caption(s: &mut Scene, r: Rect, caption: &str) {
 mod tests {
     use super::*;
     use crate::geometry::ScreenParams;
+    use nox_core::model::power::KeepAwakeMode;
     use nox_core::settings::IslandSilhouette;
 
     fn g() -> NotchGeometry {

@@ -7,10 +7,8 @@ use crate::format;
 use crate::geom::{Color, Rect};
 use crate::scene::{Action, Align, Scene, Weight};
 use nox_core::model::metrics::{MemoryPressure, MetricsSnapshot, Series};
-use nox_core::model::power::{
-    HelperStatus, KeepAwakeDuration, KeepAwakeMode, PowerCommand, StopReason,
-};
-use nox_core::{Command, Section};
+use nox_core::model::power::{HelperStatus, KeepAwakeDuration, KeepAwakeMode, PowerCommand};
+use nox_core::{Command, Reading, Section};
 
 struct Tile {
     title: &'static str,
@@ -213,26 +211,6 @@ pub fn mode_short(m: KeepAwakeMode) -> &'static str {
     }
 }
 
-pub fn stop_reason(r: StopReason) -> &'static str {
-    match r {
-        StopReason::User => "arrêté par vous",
-        StopReason::Expired => "durée écoulée",
-        StopReason::OnBattery => "passage sur batterie",
-        StopReason::BatteryThreshold => "seuil de batterie atteint",
-        StopReason::Error => "erreur",
-        StopReason::AppQuit => "fermeture de Nox",
-    }
-}
-
-pub fn helper_label(h: HelperStatus) -> &'static str {
-    match h {
-        HelperStatus::NotInstalled => "Assistant capot fermé : non installé",
-        HelperStatus::Installed => "Assistant capot fermé : installé",
-        HelperStatus::Outdated => "Assistant capot fermé : à mettre à jour",
-        HelperStatus::Unreachable => "Assistant capot fermé : injoignable",
-    }
-}
-
 pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     let Some(p) = cx.state.power.as_ref() else {
         return module_missing(s, r, Section::KeepAwake, enabled);
@@ -246,7 +224,7 @@ pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         Some(a) => {
             s.symbol(
                 Rect::new(inner.x, inner.y + 4.0, 24.0, 24.0),
-                "cup.and.saucer.fill",
+                &format!("{}.fill", a.mode.symbol()),
                 16.0,
                 Color::ORANGE,
             );
@@ -255,10 +233,10 @@ pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                 a.mode.label_fr(),
                 label(12.5).weight(Weight::Semibold),
             );
-            let left = match a.ends_at {
-                Some(e) => {
+            let left = match a.remaining_secs(cx.now) {
+                Some(rem) => {
                     s.refresh_in(30.0);
-                    format!("encore {}", format::duration((e - cx.now).max(0.0)))
+                    format!("encore {}", format::duration(rem))
                 }
                 None => "durée illimitée".into(),
             };
@@ -288,9 +266,10 @@ pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                 "Inactif — le Mac suit ses réglages de veille",
                 label(12.5).weight(Weight::Semibold),
             );
-            let last = match (p.last_stop, &p.last_error) {
-                (_, Some(e)) => format!("Dernière erreur : {e}"),
-                (Some(r), None) => format!("Dernier arrêt : {}", stop_reason(r)),
+            let last = match (p.last_stop, &p.last_error, &p.notice) {
+                (_, Some(e), _) => format!("Dernière erreur : {e}"),
+                (_, None, Some(n)) => n.clone(),
+                (Some(r), None, None) => format!("Dernier arrêt : {}", r.label_fr()),
                 _ => {
                     let mut c = vec![];
                     if ps.only_on_ac {
@@ -328,26 +307,31 @@ pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             mode_short(mode),
             secondary(11.0).weight(Weight::Medium),
         );
-        let needs_helper = mode == KeepAwakeMode::ClosedLid && p.helper != HelperStatus::Installed;
-        if needs_helper {
+        if mode.needs_helper() && !p.helper.usable() {
             let (txt, btn) = pills.split_right(170.0, 6.0);
             s.text(
                 Rect::new(txt.x, txt.y + 5.0, txt.w, 14.0),
-                helper_label(p.helper),
+                p.helper.label_fr(),
                 tertiary(10.0),
             );
-            pill(
-                s,
-                cx,
-                btn,
-                if p.helper == HelperStatus::Outdated {
-                    "Mettre à jour l’assistant…"
-                } else {
-                    "Installer l’assistant…"
-                },
-                false,
-                Action::InstallHelper,
-            );
+            if p.helper_busy {
+                // No action while macOS shows the administrator prompt.
+                s.fill(btn, btn.h / 2.0, Color::CARD);
+                s.text(
+                    btn.inset(6.0, 5.0),
+                    "Installation en cours…",
+                    tertiary(11.0).align(Align::Center),
+                );
+            } else {
+                pill(
+                    s,
+                    cx,
+                    btn,
+                    helper_button(p.helper),
+                    false,
+                    Action::InstallHelper,
+                );
+            }
         } else {
             let items: Vec<(String, bool, Action)> = KeepAwakeDuration::PRESETS
                 .iter()
@@ -363,17 +347,33 @@ pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         }
         y += row_h + 6.0;
     }
-    if p.helper == HelperStatus::Installed {
-        let lid = match p.lid_sleep_disabled {
-            Some(true) => " · veille capot désactivée en ce moment",
-            Some(false) => "",
-            None => " · état de la veille capot inconnu",
-        };
-        s.text(
-            Rect::new(rest.x, y + 2.0, rest.w, 13.0),
-            format!("{}{lid}", helper_label(p.helper)),
-            tertiary(9.5).align(Align::Right),
-        );
+    let lid = match &p.lid_sleep_disabled {
+        Reading::Measured(true) | Reading::Estimated(true) => {
+            "veille capot désactivée en ce moment".to_string()
+        }
+        Reading::Measured(false) | Reading::Estimated(false) => String::new(),
+        Reading::Unavailable(u) => format!("veille capot : {}", format::unavailable(u)),
+    };
+    let line = match (p.helper.usable(), lid.is_empty()) {
+        (true, true) => p.helper.label_fr().to_string(),
+        (true, false) => format!("{} · {lid}", p.helper.label_fr()),
+        (false, _) => lid,
+    };
+    s.text(
+        Rect::new(rest.x, y + 2.0, rest.w, 13.0),
+        line,
+        tertiary(9.5).align(Align::Right),
+    );
+}
+
+/// Label of the helper button for a status that is not usable yet.
+pub fn helper_button(h: HelperStatus) -> &'static str {
+    match h {
+        HelperStatus::NotInstalled => "Installer l’assistant…",
+        HelperStatus::Outdated => "Mettre à jour l’assistant…",
+        HelperStatus::Unreachable | HelperStatus::ClientRejected | HelperStatus::Installed => {
+            "Réinstaller l’assistant…"
+        }
     }
 }
 
@@ -407,7 +407,7 @@ mod tests {
     use super::*;
     use nox_core::model::metrics::MetricsState;
     use nox_core::model::power::{KeepAwakeSession, PowerState};
-    use nox_core::{IslandState, Reading, Settings, Unavailable};
+    use nox_core::{IslandState, Settings, Unavailable};
 
     #[test]
     fn system_tiles_show_reasons_not_zero() {
@@ -460,6 +460,7 @@ mod tests {
         st.power = Some(PowerState {
             active: Some(KeepAwakeSession {
                 mode: KeepAwakeMode::System,
+                duration: KeepAwakeDuration::Minutes(30),
                 started_at: 0.0,
                 ends_at: Some(1_800_000_000.0 + 1800.0),
             }),

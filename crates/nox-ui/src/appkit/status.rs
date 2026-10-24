@@ -5,7 +5,7 @@
 use super::app::{self, App};
 use super::util::ActionTarget;
 use crate::format;
-use nox_core::model::power::{HelperStatus, KeepAwakeDuration, KeepAwakeMode, PowerCommand};
+use nox_core::model::power::{KeepAwakeDuration, KeepAwakeMode, PowerCommand};
 use nox_core::{Command, IslandState};
 use objc2::rc::Retained;
 use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, ProtocolObject};
@@ -183,7 +183,18 @@ fn build(a: &App, menu: &NSMenu, targets: &mut Vec<Retained<ActionTarget>>) {
                         |a| a.hub.send(Command::Power(PowerCommand::Stop)),
                     );
                 }
-                None => info(menu, "Maintien éveillé : inactif"),
+                None => {
+                    info(menu, "Maintien éveillé : inactif");
+                    let st = a.settings();
+                    let title = format!(
+                        "Activer ({}, {})",
+                        st.power.default_mode.label_fr(),
+                        st.power.default_duration.label_fr()
+                    );
+                    add(menu, targets, &title, "", true, |a| {
+                        a.hub.send(Command::Power(PowerCommand::Toggle))
+                    });
+                }
             }
             for mode in [
                 KeepAwakeMode::System,
@@ -191,10 +202,14 @@ fn build(a: &App, menu: &NSMenu, targets: &mut Vec<Retained<ActionTarget>>) {
                 KeepAwakeMode::ClosedLid,
             ] {
                 let sub = NSMenu::new(mtm);
-                let needs_helper =
-                    mode == KeepAwakeMode::ClosedLid && p.helper != HelperStatus::Installed;
-                if needs_helper {
-                    add(&sub, targets, "Installer l’assistant…", "", true, |a| {
+                if mode.needs_helper() && !p.helper.usable() {
+                    info(&sub, p.helper.label_fr());
+                    let label = if p.helper_busy {
+                        "Installation en cours…"
+                    } else {
+                        crate::views::system::helper_button(p.helper)
+                    };
+                    add(&sub, targets, label, "", !p.helper_busy, |a| {
                         super::alerts::install_helper(a)
                     });
                 } else {
