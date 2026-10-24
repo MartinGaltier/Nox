@@ -114,6 +114,32 @@ pub enum DisplayChoice {
     Main,
 }
 
+/// Expanded island preset (A17). `Custom` uses `IslandSettings::width`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IslandSize {
+    Compact,
+    Spacious,
+    Custom,
+}
+
+/// Shape drawn on displays without a camera housing (A6/A17).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IslandSilhouette {
+    /// Hangs from the top edge like a real notch.
+    Notch,
+    /// Floats inside the menu bar.
+    Capsule,
+}
+
+/// What the closed island shows when no activity is running (A20).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum IdleContent {
+    Nothing,
+    Battery,
+    Music,
+    Agents,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct IslandSettings {
@@ -129,6 +155,20 @@ pub struct IslandSettings {
     pub gestures: bool,
     pub show_alerts: bool,
     pub width: f64,
+    /// Pointer must stay outside this long before the island closes.
+    pub close_delay_ms: u64,
+    /// Exclude the island from screenshots and screen sharing (A15).
+    pub hide_in_captures: bool,
+    /// Draw nothing at rest until the pointer reaches the island (A16).
+    pub hide_until_hover: bool,
+    pub size: IslandSize,
+    pub silhouette: IslandSilhouette,
+    pub outline: bool,
+    pub translucent: bool,
+    pub haptics: bool,
+    pub idle_content: IdleContent,
+    /// Global shortcut (⌃⌥Espace) toggles the island (A19).
+    pub shortcut_enabled: bool,
 }
 
 impl Default for IslandSettings {
@@ -149,6 +189,16 @@ impl Default for IslandSettings {
             gestures: true,
             show_alerts: true,
             width: 520.0,
+            close_delay_ms: 400,
+            hide_in_captures: false,
+            hide_until_hover: false,
+            size: IslandSize::Spacious,
+            silhouette: IslandSilhouette::Capsule,
+            outline: false,
+            translucent: false,
+            haptics: true,
+            idle_content: IdleContent::Music,
+            shortcut_enabled: false,
         }
     }
 }
