@@ -1,5 +1,5 @@
 //! Music, calendar, notifications, camera, accessories, downloads, files,
-//! shortcuts (+ controls), captures, scratchpad.
+//! shortcuts (+ controls), captures, scratchpad, clipboard.
 //! Owned by Agent Intégrations. Public contract: [`modules`].
 
 use nox_core::Module;
@@ -8,6 +8,7 @@ pub mod accessories;
 pub mod calendar;
 pub mod camera;
 pub mod captures;
+pub mod clipboard;
 pub mod downloads;
 pub mod files;
 pub mod music;
@@ -29,6 +30,7 @@ pub fn modules() -> Vec<Box<dyn Module>> {
         Box::new(notifications::NotificationsModule::default()),
         Box::new(captures::CapturesModule::default()),
         Box::new(scratchpad::ScratchpadModule::default()),
+        Box::new(clipboard::ClipboardModule::default()),
     ];
     v
 }
@@ -61,6 +63,7 @@ mod tests {
                 ModuleId::Camera,
                 ModuleId::Captures,
                 ModuleId::Scratchpad,
+                ModuleId::Clipboard,
             ]
         );
     }
