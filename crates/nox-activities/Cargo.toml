@@ -16,7 +16,9 @@ rusqlite = "0.37"
 libc.workspace = true
 objc2.workspace = true
 objc2-foundation = { workspace = true, features = ["NSString"] }
-objc2-app-kit = { workspace = true, default-features = false, features = ["std", "NSSound"] }
+objc2-app-kit = { workspace = true, default-features = false, features = ["std", "libc", "NSSound", "NSRunningApplication"] }
+security-framework = "3"
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
 
 [lints]
 workspace = true

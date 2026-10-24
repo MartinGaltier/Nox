@@ -7,12 +7,14 @@ pub mod agents;
 pub mod clock;
 pub mod sound;
 pub mod timers;
-mod wake;
 
 pub fn modules() -> Vec<Box<dyn Module>> {
-    let mut v: Vec<Box<dyn Module>> = vec![Box::new(timers::TimersModule::new())];
+    let mut v: Vec<Box<dyn Module>> = vec![
+        Box::new(agents::AgentsModule::new()),
+        Box::new(timers::TimersModule::new()),
+    ];
     v.extend(
-        [ModuleId::Agents, ModuleId::Watch, ModuleId::Companion]
+        [ModuleId::Watch, ModuleId::Companion]
             .into_iter()
             .map(todo_module::Placeholder::boxed),
     );

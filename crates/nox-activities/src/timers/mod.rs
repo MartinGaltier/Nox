@@ -7,7 +7,6 @@ pub mod engine;
 
 use crate::clock::{SharedClock, SystemClock};
 use crate::sound::{self, Tone};
-use crate::wake::{Wake, stop_worker};
 use engine::{Persisted, TimerEngine, TimerEvent};
 use nox_core::model::timers::FocusPhase;
 use nox_core::{
@@ -106,7 +105,6 @@ fn alert_for(ev: &TimerEvent) -> (Alert, Tone) {
 pub struct TimersModule {
     shared: Option<Arc<Mutex<Shared>>>,
     worker: Option<Worker>,
-    wake: Wake,
     clock: SharedClock,
     /// Overrides the state file (tests).
     path_override: Option<PathBuf>,
@@ -117,7 +115,6 @@ impl TimersModule {
         Self {
             shared: None,
             worker: None,
-            wake: Wake::new(),
             clock: SystemClock::shared(),
             path_override: None,
         }
@@ -128,7 +125,6 @@ impl TimersModule {
         Self {
             shared: None,
             worker: None,
-            wake: Wake::new(),
             clock,
             path_override: Some(path),
         }
@@ -191,7 +187,6 @@ impl Module for TimersModule {
             }
         }
         let s2 = shared.clone();
-        let wake = self.wake.clone();
         self.worker = Some(Worker::spawn("timers", move |token| {
             loop {
                 let sleep = {
@@ -217,7 +212,7 @@ impl Module for TimersModule {
                         (false, None) => IDLE_SLEEP,
                     }
                 };
-                if wake.sleep(&token, sleep.max(Duration::from_millis(5))) {
+                if token.sleep(sleep.max(Duration::from_millis(5))) {
                     break;
                 }
             }
@@ -227,7 +222,9 @@ impl Module for TimersModule {
     }
 
     fn stop(&mut self) {
-        stop_worker(&mut self.worker, &self.wake);
+        if let Some(mut w) = self.worker.take() {
+            w.stop();
+        }
         if let Some(shared) = self.shared.take() {
             let s = lock(&shared);
             s.save();
@@ -247,7 +244,9 @@ impl Module for TimersModule {
             s.save();
             s.publish();
         }
-        self.wake.wake();
+        if let Some(w) = &self.worker {
+            w.token().nudge();
+        }
     }
 
     fn settings_changed(&mut self, settings: &Arc<Settings>) {

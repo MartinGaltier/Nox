@@ -222,7 +222,7 @@ pub struct BudgetStatus {
     pub spent_today_usd: Reading<f64>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AgentsState {
     pub providers: Vec<ProviderStatus>,
     #[serde(default)]
