@@ -3,6 +3,7 @@
 
 use nox_core::{Module, ModuleId};
 
+pub mod accessories;
 pub mod calendar;
 pub mod camera;
 pub mod downloads;
@@ -22,6 +23,7 @@ pub fn modules() -> Vec<Box<dyn Module>> {
         Box::new(downloads::DownloadsModule::default()),
         Box::new(files::FilesModule::default()),
         Box::new(shortcuts::ShortcutsModule::default()),
+        Box::new(accessories::AccessoriesModule::default()),
     ];
     v.extend(
         [ModuleId::Notifications, ModuleId::Accessories]

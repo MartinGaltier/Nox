@@ -6,6 +6,7 @@ pub mod avcapture;
 pub mod eventkit;
 pub mod fsevents;
 pub mod http;
+pub mod peripherals;
 pub mod progress;
 pub mod system;
 pub mod workspace;
