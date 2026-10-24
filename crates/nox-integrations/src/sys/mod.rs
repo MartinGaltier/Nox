@@ -3,6 +3,7 @@
 
 pub mod applescript;
 pub mod avcapture;
+pub mod ax;
 pub mod eventkit;
 pub mod fsevents;
 pub mod http;
