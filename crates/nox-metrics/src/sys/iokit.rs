@@ -65,7 +65,8 @@ impl IoObject {
             }
             IOServiceGetMatchingService(MAIN_PORT_DEFAULT, m)
         };
-        (svc != 0).then_some(Self(svc))
+        // `then`, not `then_some`: never build (and drop) a wrapper around 0.
+        (svc != 0).then(|| Self(svc))
     }
 
     /// Every registry service whose class matches `class`.
