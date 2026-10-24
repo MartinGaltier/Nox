@@ -61,7 +61,7 @@ Référence : Vorssaint `e916961` (voir docs/REFERENCE.md). Statuts : **à faire
 | Maintien éveillé | état + temps restant, 3 modes × 5 durées, arrêt, assistant capot fermé (explication puis `InstallHelper`) | module absent |
 | Accessoires | appareils connectés, batteries G/D/boîtier | vide / raison |
 | Surveillance | phase, cible, taille, dernier changement, choix du déclencheur → overlay de sélection → `WatchCommand::Start` | autorisation Enregistrement d’écran |
-| Caméra | hôte de calque pour l’aperçu d’`integrations`, Start/Stop selon visibilité, choix de caméra | autorisation / « Aperçu en attente du module caméra » tant que le hook n’existe pas |
+| Caméra | calque hôte remis via `set_preview_host` (hôte puis Start ; Stop puis None), choix de caméra, erreur du module | autorisation / erreur (« caméra occupée »…) ; aperçu réel non testé (pas d’accès caméra pour l’agent) |
 | Raccourcis | actions rapides des réglages + raccourcis Raccourcis.app, dernier résultat | vide |
 
 Fenêtre **Moniteur système** : cœurs P/E, GPU, capteurs, mémoire/pression/swap, batterie (santé, cycles,
@@ -87,9 +87,12 @@ autonomie, flux), puissance, réseau (↓/↑ + historique), disques, ventilateu
 * Rendu : captures internes debug (`NOX_UI_SNAPSHOT`, `cacheDisplayInRect`) de la bande compacte (musique) et de toutes les pages dépliées, du moniteur avec les **vraies** mesures du module metrics (8 cœurs E/P, santé batterie « estimé », puissances CPU/ANE « Indisponible », capteurs, disque) et du maintien éveillé avec le vrai module power.
 * Réglages : rapport de mise en page (5 onglets, 152 contrôles, aucun hors de la zone visible de 714 pt).
 * Release : aucune chaîne de fixture ni de hook debug dans le binaire (`strings`).
+* **Avec tous les vrais modules** (main c0aa292 fusionné) : bande compacte « agent qui travaille » pilotée par la session Claude réelle, page Agents (forfaits Pro/Plus, coûts « estimé », fenêtre réinitialisée affichée « … »), Raccourcis avec les vrais niveaux volume/luminosité/muet, Calendrier en attente d’autorisation (bouton Autoriser), Musique « Rien en lecture », Système/Moniteur avec les mesures M2. Réglages : 6 onglets, aucun contrôle hors champ.
+* CPU, build release, vrais modules (accessoires coupés), îlot compact au repos : 0,52 s sur 120 s (≈ 0,4 %, threads des modules : agents qui lisent les journaux de la session en cours, metrics) ; échantillon `sample` : thread principal (UI) 100 % en attente (`mach_msg`).
 
 ## Limites
 
+* **Blocage hors UI signalé à integrations** : le module accessoires appelle `+[IOBluetoothDevice pairedDevices]` sur le thread principal ; `IOBluetoothCoreBluetoothCoordinator init` y attend un sémaphore indéfiniment et l’app entière se fige au lancement (processus sans autorisation Bluetooth). Vérifications faites avec ce module coupé.
 * `screencapture` échoue (« could not create image from display ») : le processus de l’agent n’a pas l’autorisation Enregistrement de l’écran. Les captures internes ne montrent pas l’îlot superposé à la vraie encoche : à valider à l’œil.
 * Aucune entrée synthétique possible (Accessibilité non accordée) : survol, clic, balayage, glisser-déposer et overlay de sélection ne sont couverts que par les tests unitaires.
 * Le texte des contrôles standard de la fenêtre Réglages n’est pas rendu hors écran : vérifiée par rapport de mise en page, pas visuellement.
