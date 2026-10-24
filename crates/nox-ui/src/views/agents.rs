@@ -27,7 +27,10 @@ pub fn tokens(n: u64) -> String {
 pub fn limit_text(l: &LimitWindow, list_estimated: bool, now: f64) -> String {
     match l.status(now) {
         LimitStatus::Renewed { .. } => "réinitialisée — en attente d’une nouvelle lecture".into(),
-        LimitStatus::Current { resets_at, estimated } => {
+        LimitStatus::Current {
+            resets_at,
+            estimated,
+        } => {
             let mut t = format::reading(&l.used_percent, |u| {
                 format!("{} utilisés", format::percent(*u))
             });
@@ -36,7 +39,10 @@ pub fn limit_text(l: &LimitWindow, list_estimated: bool, now: f64) -> String {
             }
             if let Some(reset) = resets_at {
                 if estimated {
-                    t.push_str(&format!(" · reset ≈ {} (estimé)", format::relative(reset, now)));
+                    t.push_str(&format!(
+                        " · reset ≈ {} (estimé)",
+                        format::relative(reset, now)
+                    ));
                 } else {
                     t.push_str(&format!(" · reset {}", format::relative(reset, now)));
                 }
@@ -105,7 +111,10 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         let (body, foot) = r.split_top(r.h - 13.0, 0.0);
         s.text(
             foot,
-            format!("Coûts estimés au tarif API · tarifs du {}", a.prices_updated),
+            format!(
+                "Coûts estimés au tarif API · tarifs du {}",
+                a.prices_updated
+            ),
             tertiary(9.0).align(Align::Right),
         );
         body
@@ -222,7 +231,13 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                         None => s.fill(track, 2.5, Color::TRACK),
                     }
                     let t = limit_text(l, est, cx.now);
-                    if matches!(l.status(cx.now), LimitStatus::Current { resets_at: Some(_), .. }) {
+                    if matches!(
+                        l.status(cx.now),
+                        LimitStatus::Current {
+                            resets_at: Some(_),
+                            ..
+                        }
+                    ) {
                         // The countdown moves; a renewed window waits for a new reading.
                         s.refresh_in(60.0);
                     }
@@ -239,7 +254,11 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                     // The whole reason, on two lines: it says what to change.
                     other => format!("Limites : {}", format::unavailable_full(other)),
                 };
-                s.text(Rect::new(inner.x, y, inner.w, 26.0), why, tertiary(10.0).lines(2));
+                s.text(
+                    Rect::new(inner.x, y, inner.w, 26.0),
+                    why,
+                    tertiary(10.0).lines(2),
+                );
                 y += 28.0;
             }
         }
@@ -247,11 +266,21 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             let first = match &acc.limits {
                 Reading::Measured(ls) | Reading::Estimated(ls) => ls
                     .first()
-                    .map(|l| format!("{} : {}", l.name, limit_text(l, acc.limits.is_estimated(), cx.now)))
+                    .map(|l| {
+                        format!(
+                            "{} : {}",
+                            l.name,
+                            limit_text(l, acc.limits.is_estimated(), cx.now)
+                        )
+                    })
                     .unwrap_or_else(|| "aucune limite".into()),
                 Reading::Unavailable(u) => format::unavailable(u),
             };
-            let plan = acc.plan.as_deref().map(|p| format!(" ({p})")).unwrap_or_default();
+            let plan = acc
+                .plan
+                .as_deref()
+                .map(|p| format!(" ({p})"))
+                .unwrap_or_default();
             s.text(
                 Rect::new(inner.x, y, inner.w, 14.0),
                 format!("Compte {}{plan} — {first}", acc.name),

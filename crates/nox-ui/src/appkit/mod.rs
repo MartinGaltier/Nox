@@ -5,6 +5,7 @@ pub mod alerts;
 pub mod app;
 pub mod camera;
 pub mod canvas;
+pub mod editor;
 pub mod files;
 #[cfg(debug_assertions)]
 pub mod fixture;

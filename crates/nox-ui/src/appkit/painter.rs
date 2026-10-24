@@ -124,10 +124,13 @@ impl Painter {
         self.thumbs
             .entry(path.to_string())
             .or_insert_with(|| {
-                let src = NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path))?;
+                let src =
+                    NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path))?;
                 let sz = src.size();
                 // Twice the tile size for Retina, aspect preserved.
-                let k = ((rect.w * 2.0) / sz.width.max(1.0)).max((rect.h * 2.0) / sz.height.max(1.0)).min(1.0);
+                let k = ((rect.w * 2.0) / sz.width.max(1.0))
+                    .max((rect.h * 2.0) / sz.height.max(1.0))
+                    .min(1.0);
                 let tw = (sz.width * k).max(1.0);
                 let th = (sz.height * k).max(1.0);
                 let thumb = NSImage::initWithSize(NSImage::alloc(), NSSize::new(tw, th));

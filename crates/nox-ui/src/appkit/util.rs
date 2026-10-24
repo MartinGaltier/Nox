@@ -8,8 +8,8 @@ use objc2::runtime::{AnyObject, NSObject, ProtocolObject};
 use objc2::{DefinedClass, MainThreadMarker, MainThreadOnly, define_class, msg_send, sel};
 use objc2_app_kit::NSColor;
 use objc2_foundation::{
-    NSNotification, NSOperationQueue, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSPoint, NSRect,
-    NSRunLoop, NSRunLoopCommonModes, NSSize, NSTimer,
+    NSNotification, NSNotificationCenter, NSNotificationName, NSObjectProtocol, NSOperationQueue,
+    NSPoint, NSRect, NSRunLoop, NSRunLoopCommonModes, NSSize, NSTimer,
 };
 use std::ptr::NonNull;
 
@@ -112,7 +112,12 @@ impl Observer {
         // main thread whatever thread posts the notification.
         let queue = NSOperationQueue::mainQueue();
         let token = unsafe {
-            center.addObserverForName_object_queue_usingBlock(Some(name), object, Some(&queue), &block)
+            center.addObserverForName_object_queue_usingBlock(
+                Some(name),
+                object,
+                Some(&queue),
+                &block,
+            )
         };
         Self { center, token }
     }

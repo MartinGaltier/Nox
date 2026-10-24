@@ -14,9 +14,8 @@ use nox_core::model::watch::{Rect as WatchRect, WatchCommand, WatchTrigger};
 use objc2::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2_app_kit::{
-    NSApplicationActivationOptions, NSRunningApplication, NSWorkspace,
-    NSApplication, NSBackingStoreType, NSColor, NSCursor, NSEvent, NSScreen, NSWindow,
-    NSWindowStyleMask,
+    NSApplication, NSApplicationActivationOptions, NSBackingStoreType, NSColor, NSCursor, NSEvent,
+    NSRunningApplication, NSScreen, NSWindow, NSWindowStyleMask, NSWorkspace,
 };
 use std::cell::Cell;
 use std::rc::Rc;

@@ -22,9 +22,11 @@ define_class!(
 
     impl IslandPanel {
         // Never key, never main: the app in front keeps the keyboard (A5).
+        // Sole exception: while the scratchpad editor is on screen, so the
+        // user can type after clicking into it.
         #[unsafe(method(canBecomeKeyWindow))]
         fn can_become_key(&self) -> bool {
-            false
+            super::editor::accepts_key()
         }
 
         #[unsafe(method(canBecomeMainWindow))]

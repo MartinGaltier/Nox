@@ -327,6 +327,15 @@ impl App {
                 i.artwork.retain(|k, _| *k == keep);
                 i.painter.retain_artwork(&[keep]);
             }
+            {
+                let paths: Vec<String> = snapshot
+                    .captures
+                    .iter()
+                    .flat_map(|c| c.items.iter().map(|it| it.path.clone()))
+                    .collect();
+                let keep: Vec<&str> = paths.iter().map(String::as_str).collect();
+                i.painter.retain_thumbnails(&keep);
+            }
             i.state = snapshot;
             let settings = i.settings.clone();
             i.model.push_alerts(alerts, &settings, mono());
@@ -463,10 +472,17 @@ impl App {
             i.page_shown = shown;
             changed.then_some(shown).flatten()
         };
-        if appeared == Some(Section::Shortcuts) {
-            use nox_core::model::shortcuts::ShortcutCommand;
-            self.hub
-                .send(Command::Shortcuts(ShortcutCommand::RefreshControls));
+        match appeared {
+            Some(Section::Shortcuts) => {
+                use nox_core::model::shortcuts::ShortcutCommand;
+                self.hub
+                    .send(Command::Shortcuts(ShortcutCommand::RefreshControls));
+            }
+            Some(Section::Captures) => {
+                use nox_core::model::captures::CaptureCommand;
+                self.hub.send(Command::Captures(CaptureCommand::Refresh));
+            }
+            _ => {}
         }
         self.set_metrics_visible(shows_metrics && expanded_page);
         self.set_camera_visible(shows_camera && expanded_page);
@@ -479,9 +495,20 @@ impl App {
                 }
             })
         });
+        let editor_rect = i.scene.ops.iter().find_map(|o| match o {
+            crate::scene::Op::TextEditor { rect } => Some(rect.offset(i.offset, 0.0)),
+            _ => None,
+        });
+        let initial = i
+            .state
+            .scratchpad
+            .as_ref()
+            .map(|p| p.text.clone())
+            .unwrap_or_default();
         let dmg = i.damage.take();
         let (offset, animating) = (i.offset, i.anim.is_some());
         drop(i);
+        super::editor::sync(&self.view, editor_rect, || initial);
         // Unchanged scene: nothing to draw; a small change (equalizer bars,
         // countdown digits): only that rectangle.
         match dmg {

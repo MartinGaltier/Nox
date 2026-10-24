@@ -243,7 +243,12 @@ pub fn op_bounds(op: &Op) -> Option<Rect> {
         | Op::TextEditor { rect } => Some(*rect),
         Op::Line { points, width, .. } => bbox(points).map(|r| r.inset(-width, -width)),
         Op::Area { points, .. } => bbox(points),
-        Op::Ring { center, radius, width, .. } => {
+        Op::Ring {
+            center,
+            radius,
+            width,
+            ..
+        } => {
             let e = radius + width;
             Some(Rect::new(center.x - e, center.y - e, 2.0 * e, 2.0 * e))
         }
@@ -276,7 +281,12 @@ pub fn damage(old: &Scene, new: &Scene) -> Damage {
                         Some(u) => {
                             let x0 = u.x.min(r.x);
                             let y0 = u.y.min(r.y);
-                            Rect::new(x0, y0, u.max_x().max(r.max_x()) - x0, u.max_y().max(r.max_y()) - y0)
+                            Rect::new(
+                                x0,
+                                y0,
+                                u.max_x().max(r.max_x()) - x0,
+                                u.max_y().max(r.max_y()) - y0,
+                            )
                         }
                     });
                 }
@@ -374,7 +384,10 @@ mod tests {
             radius: 0.0,
             color: Color::ACCENT,
         };
-        assert_eq!(damage(&a, &b), Damage::Rect(Rect::new(48.0, -2.0, 8.0, 14.0)));
+        assert_eq!(
+            damage(&a, &b),
+            Damage::Rect(Rect::new(48.0, -2.0, 8.0, 14.0))
+        );
         b.ops.push(Op::PopClip);
         assert_eq!(damage(&a, &b), Damage::All);
     }
