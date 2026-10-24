@@ -166,8 +166,10 @@ fn battery_byte(dev: &IOBluetoothDevice, sel: Sel) -> Option<u8> {
     }
 }
 
-/// Paired Bluetooth devices. May show the Bluetooth prompt the first time
-/// (the caller decides when); call on the main thread.
+/// Paired Bluetooth devices. Call ONLY when `bluetooth_permission()` is
+/// `Granted`, and NEVER on the main thread: without the permission the
+/// CoreBluetooth coordinator behind `pairedDevices` waits on a semaphore
+/// indefinitely (measured on macOS 27: app frozen at launch).
 pub fn bluetooth_devices() -> Vec<BtDevice> {
     // SAFETY: IOBluetooth class method; elements are IOBluetoothDevice.
     let Some(arr) = (unsafe { IOBluetoothDevice::pairedDevices() }) else {

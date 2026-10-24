@@ -66,6 +66,11 @@ impl Module for AccessoriesModule {
     }
 }
 
+/// IOBluetooth may be touched only when this holds (see `run`).
+pub fn uses_bluetooth(perm: PermissionState) -> bool {
+    perm == PermissionState::Granted
+}
+
 pub fn kind_from_name(name: &str) -> Option<AccessoryKind> {
     let n = name.to_lowercase();
     let has = |words: &[&str]| words.iter().any(|w| n.contains(w));
@@ -301,19 +306,16 @@ pub fn symbol(k: AccessoryKind) -> &'static str {
 
 fn run(hub: Hub, settings: Arc<Mutex<AccessorySettings>>, token: CancelToken) {
     let mut monitor = Monitor::default();
-    let mut asked_bluetooth = false;
     while !token.is_cancelled() {
+        // Class-level read: never prompts, never blocks.
         let perm = peripherals::bluetooth_permission();
-        // First start: one IOBluetooth read may show the Bluetooth prompt;
-        // afterwards only read once granted (no repeated prompts).
-        let use_bt = perm == PermissionState::Granted
-            || (perm == PermissionState::NotDetermined && !asked_bluetooth);
-        if perm == PermissionState::NotDetermined {
-            asked_bluetooth = true;
-        }
-        let bt = if use_bt {
-            crate::sys::on_main(crate::sys::MAIN_TIMEOUT, peripherals::bluetooth_devices)
-                .unwrap_or_default()
+        // IOBluetooth only once Bluetooth is allowed, and on this worker
+        // thread: without the permission `+[IOBluetoothDevice pairedDevices]`
+        // blocks on a semaphore (its CoreBluetooth coordinator waits for the
+        // TCC answer); on the main thread that froze the whole app at launch.
+        // Until then only IORegistry batteries (no permission) are listed.
+        let bt = if uses_bluetooth(perm) {
+            peripherals::bluetooth_devices()
         } else {
             vec![]
         };
@@ -366,6 +368,19 @@ mod tests {
             usage_page: Some(1),
             usage: Some(2),
             address: Some("aa-bb-cc-dd-ee-02".into()),
+        }
+    }
+
+    #[test]
+    fn bluetooth_only_when_allowed() {
+        assert!(uses_bluetooth(PermissionState::Granted));
+        for p in [
+            PermissionState::NotDetermined,
+            PermissionState::Denied,
+            PermissionState::Restricted,
+            PermissionState::NotRequired,
+        ] {
+            assert!(!uses_bluetooth(p), "{p:?} must not reach IOBluetooth");
         }
     }
 
