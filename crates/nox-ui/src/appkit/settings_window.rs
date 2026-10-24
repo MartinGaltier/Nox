@@ -241,6 +241,9 @@ fn module_label(id: ModuleId) -> &'static str {
         ModuleId::Companion => "Compagnon",
         ModuleId::Metrics => "Mesures système",
         ModuleId::Power => "Maintien éveillé",
+        ModuleId::Captures => "Captures récentes (dossier Bureau)",
+        ModuleId::Scratchpad => "Bloc-notes",
+        ModuleId::Clipboard => "Presse-papiers (mémoire seulement)",
     }
 }
 
