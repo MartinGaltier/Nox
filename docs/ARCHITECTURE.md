@@ -76,6 +76,6 @@ publiques exposées au reste du code sont sûres.
 
 ## Données privées
 
-Rien de privé n'est persisté ni committé : notifications et événements restent en mémoire ;
+Rien de privé n'est persisté ni committé, à deux exceptions voulues par l'utilisateur : le bloc-notes (`scratchpad/note.txt`, 0600) et le cache des paroles (plafonné à 200 entrées / 90 jours, supprimé quand les paroles sont désactivées). Sinon : notifications et événements restent en mémoire ;
 les journaux des agents IA sont lus en place ; aucune clé/cookie n'est copiée. Les jetons OAuth
 déjà stockés par les CLI ne sont lus que si `agents.allow_limit_queries` est activé.
