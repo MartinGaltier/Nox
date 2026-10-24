@@ -212,6 +212,7 @@ struct Engine {
     /// Bumped on every track change; stale job results are dropped.
     generation: u64,
     last_line: Option<StateLine>,
+    artwork_cache: ArtworkCache,
     jobs: Option<Sender<Job>>,
     results: Receiver<JobResult>,
     results_tx: Sender<JobResult>,
@@ -236,6 +237,7 @@ impl Engine {
             track: None,
             generation: 0,
             last_line: None,
+            artwork_cache: None,
             jobs: None,
             results,
             results_tx,
@@ -399,7 +401,7 @@ impl Engine {
         }
         self.empty_since = None;
         let previous = self.state.now_playing.take();
-        let np = to_now_playing(&line, previous.as_ref());
+        let np = to_now_playing(&line, previous.as_ref(), &mut self.artwork_cache);
         let id = TrackId {
             bundle: line.app_bundle_id().unwrap_or_default().to_owned(),
             title: np.title.clone(),
@@ -613,7 +615,15 @@ impl Engine {
 
 /// Maps an adapter line to the shared model, keeping the previous artwork
 /// bytes when only their id was re-sent.
-fn to_now_playing(line: &StateLine, previous: Option<&NowPlaying>) -> NowPlaying {
+/// Last artwork bytes received, by id (the adapter sends bytes only when
+/// the id changes).
+type ArtworkCache = Option<(u64, Arc<Vec<u8>>)>;
+
+fn to_now_playing(
+    line: &StateLine,
+    previous: Option<&NowPlaying>,
+    cache: &mut ArtworkCache,
+) -> NowPlaying {
     let bundle = line.app_bundle_id().map(str::to_owned);
     let player = bundle.map(|b| PlayerInfo {
         name: line
@@ -623,12 +633,29 @@ fn to_now_playing(line: &StateLine, previous: Option<&NowPlaying>) -> NowPlaying
             .unwrap_or_else(|| b.clone()),
         bundle_id: b,
     });
-    let artwork = match (line.artwork_id, line.artwork.as_deref()) {
-        (Some(_), Some(b64)) => crate::util::base64_decode(b64).map(Arc::new),
-        (Some(id), None) => previous
-            .filter(|p| p.artwork_id == id)
-            .and_then(|p| p.artwork.clone()),
-        (None, _) => None,
+    let same_track = previous.is_some_and(|p| {
+        p.title == line.title.clone().unwrap_or_default()
+            && p.artist == line.artist.clone().unwrap_or_default()
+    });
+    let (artwork, artwork_id) = match (line.artwork_id, line.artwork.as_deref()) {
+        (Some(id), Some(b64)) => match crate::util::base64_decode(b64).map(Arc::new) {
+            Some(bytes) => {
+                *cache = Some((id, bytes.clone()));
+                (Some(bytes), id)
+            }
+            None => (None, 0),
+        },
+        (Some(id), None) => match cache.as_ref().filter(|(c, _)| *c == id) {
+            Some((_, bytes)) => (Some(bytes.clone()), id),
+            None => (None, 0),
+        },
+        // Metadata arrives before the cover: keep showing the cover of the
+        // same track rather than flickering to none.
+        (None, _) if same_track => (
+            previous.and_then(|p| p.artwork.clone()),
+            previous.map(|p| p.artwork_id).unwrap_or(0),
+        ),
+        (None, _) => (None, 0),
     };
     let shuffle = match line.shuffle_mode {
         Some(1) => Some(false),
@@ -652,11 +679,7 @@ fn to_now_playing(line: &StateLine, previous: Option<&NowPlaying>) -> NowPlaying
         title: line.title.clone().unwrap_or_default(),
         artist: line.artist.clone().unwrap_or_default(),
         album: line.album.clone().unwrap_or_default(),
-        artwork_id: if artwork.is_some() {
-            line.artwork_id.unwrap_or(0)
-        } else {
-            0
-        },
+        artwork_id,
         artwork,
         duration,
         elapsed: line.elapsed.unwrap_or(0.0),
@@ -703,20 +726,46 @@ mod tests {
 
     #[test]
     fn maps_adapter_state_and_keeps_artwork() {
-        let np = to_now_playing(&line("A"), None);
+        let mut cache = None;
+        let np = to_now_playing(&line("A"), None, &mut cache);
         assert_eq!(
             np.artwork.as_deref().map(|v| v.as_slice()),
             Some(&b"foo"[..])
         );
+        assert_eq!(np.artwork_id, 9);
         assert_eq!(np.shuffle, Some(true));
         assert_eq!(np.repeat, Some(RepeatMode::One));
         assert!((np.elapsed_now(55.0) - 15.0).abs() < 1e-9);
+        // Same id without bytes: served from the cache.
         let mut l2 = line("A");
         l2.artwork = None;
-        let np2 = to_now_playing(&l2, Some(&np));
-        assert_eq!(np2.artwork, np.artwork, "same id keeps previous bytes");
-        l2.artwork_id = Some(10);
-        assert!(to_now_playing(&l2, Some(&np)).artwork.is_none());
+        assert_eq!(
+            to_now_playing(&l2, Some(&np), &mut cache).artwork,
+            np.artwork
+        );
+        // Metadata before the cover on the same track: cover kept.
+        let mut l3 = line("A");
+        l3.artwork = None;
+        l3.artwork_id = None;
+        assert_eq!(
+            to_now_playing(&l3, Some(&np), &mut cache).artwork,
+            np.artwork
+        );
+        // New track without cover yet: none, then the same cover id is
+        // restored from the cache although the adapter omits the bytes.
+        let mut b = line("B");
+        b.artwork = None;
+        b.artwork_id = None;
+        let nb = to_now_playing(&b, Some(&np), &mut cache);
+        assert!(nb.artwork.is_none());
+        b.artwork_id = Some(9);
+        assert_eq!(
+            to_now_playing(&b, Some(&nb), &mut cache).artwork,
+            np.artwork
+        );
+        // Unknown id without bytes: nothing invented.
+        b.artwork_id = Some(10);
+        assert!(to_now_playing(&b, Some(&nb), &mut cache).artwork.is_none());
     }
 
     #[test]

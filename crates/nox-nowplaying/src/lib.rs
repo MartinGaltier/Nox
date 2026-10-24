@@ -87,7 +87,10 @@ impl Watcher {
                     let mut last = self.last_artwork.lock().unwrap_or_else(|e| e.into_inner());
                     let (v, sent) =
                         protocol::state_reply(&info, client.as_ref(), pid, playing, *last, now());
-                    *last = sent;
+                    // A reading without artwork (players send metadata first,
+                    // the cover a moment later) keeps the last id: the app
+                    // still holds those bytes, so they are not re-sent.
+                    *last = sent.or(*last);
                     v
                 }
             },
