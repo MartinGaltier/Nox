@@ -1,5 +1,18 @@
 //! Native AppKit UI: island window, animations, settings window, menu bar.
 //! Owned by Agent Interface. Public contract: [`UiContext`], [`run`].
+#![cfg_attr(test, allow(clippy::field_reassign_with_default))]
+
+pub mod alerts;
+pub mod compact;
+pub mod format;
+pub mod geom;
+pub mod geometry;
+pub mod gesture;
+pub mod island;
+pub mod machine;
+pub mod scene;
+pub mod spring;
+pub mod views;
 
 use nox_core::{Hub, Settings, SettingsStore};
 use std::sync::Arc;

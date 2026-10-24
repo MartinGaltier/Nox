@@ -11,6 +11,14 @@ nox-core.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+objc2.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2-foundation.workspace = true
+objc2-app-kit.workspace = true
+objc2-quartz-core.workspace = true
+objc2-core-foundation.workspace = true
+objc2-core-graphics.workspace = true
 
 [lints]
 workspace = true
