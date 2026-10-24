@@ -94,6 +94,8 @@ struct Inner {
     page_shown: Option<Section>,
     /// Region selection asked; the overlay opens once watch reports Selecting.
     pending_selection: Option<nox_core::model::watch::WatchTrigger>,
+    /// Damage of the last relayout, consumed when invalidating the view.
+    damage: Option<crate::scene::Damage>,
     dragging_files: bool,
 }
 
@@ -180,6 +182,7 @@ impl App {
                 seek_drag: None,
                 page_shown: None,
                 pending_selection: None,
+                damage: None,
                 dragging_files: false,
             }),
             panel,
@@ -421,6 +424,7 @@ impl App {
         let _ = offset;
         let cur = super::util::rect(self.panel.frame());
         if cur != frame {
+            self.inner.borrow_mut().damage = Some(crate::scene::Damage::All);
             self.panel.setFrame_display(ns_rect(frame), false);
             self.view
                 .setFrame(ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h)));
@@ -442,7 +446,9 @@ impl App {
                 scene.scroll_extent,
                 i.model.current_section(&i.settings),
             );
+            let dmg = crate::scene::damage(&i.scene, &scene);
             i.scene = scene;
+            i.damage = Some(dmg);
             r
         };
         if let Some(sec) = section {
@@ -473,8 +479,19 @@ impl App {
                 }
             })
         });
+        let dmg = i.damage.take();
+        let (offset, animating) = (i.offset, i.anim.is_some());
         drop(i);
-        self.view.setNeedsDisplay(true);
+        // Unchanged scene: nothing to draw; a small change (equalizer bars,
+        // countdown digits): only that rectangle.
+        match dmg {
+            _ if animating => self.view.setNeedsDisplay(true),
+            Some(crate::scene::Damage::None) => {}
+            Some(crate::scene::Damage::Rect(r)) => self
+                .view
+                .setNeedsDisplayInRect(super::util::ns_rect(r.offset(offset, 0.0))),
+            _ => self.view.setNeedsDisplay(true),
+        }
     }
 
     fn content_tick(&self) {
@@ -772,8 +789,6 @@ impl App {
             Action::OpenMonitor => super::monitor_window::show(self),
             Action::InstallHelper => super::alerts::install_helper(self),
             Action::BeginWatchSelection(trigger) => {
-                self.hub
-                    .send(Command::Watch(WatchCommand::SetTrigger(trigger)));
                 self.hub.send(Command::Watch(WatchCommand::BeginSelection));
                 let mut i = self.inner.borrow_mut();
                 i.pending_selection = Some(trigger);

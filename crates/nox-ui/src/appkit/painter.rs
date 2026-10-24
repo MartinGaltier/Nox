@@ -35,6 +35,9 @@ type SymbolKey = (String, u32, [u8; 4], u8);
 pub struct Painter {
     symbols: HashMap<SymbolKey, Option<Retained<NSImage>>>,
     artwork: HashMap<u64, Option<Retained<NSImage>>>,
+    /// Downscaled thumbnails of image files, by path (full-size screenshots
+    /// are never kept decoded).
+    thumbs: HashMap<String, Option<Retained<NSImage>>>,
 }
 
 /// Source of decoded artwork bytes for an id.
@@ -108,6 +111,37 @@ impl Painter {
                     &NSImageSymbolConfiguration::configurationWithPaletteColors(&colors),
                 );
                 img.imageWithSymbolConfiguration(&cfg)
+            })
+            .clone()
+    }
+
+    /// Keeps only the thumbnails of these paths.
+    pub fn retain_thumbnails(&mut self, keep: &[&str]) {
+        self.thumbs.retain(|k, _| keep.contains(&k.as_str()));
+    }
+
+    fn thumbnail(&mut self, path: &str, rect: Rect) -> Option<Retained<NSImage>> {
+        self.thumbs
+            .entry(path.to_string())
+            .or_insert_with(|| {
+                let src = NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(path))?;
+                let sz = src.size();
+                // Twice the tile size for Retina, aspect preserved.
+                let k = ((rect.w * 2.0) / sz.width.max(1.0)).max((rect.h * 2.0) / sz.height.max(1.0)).min(1.0);
+                let tw = (sz.width * k).max(1.0);
+                let th = (sz.height * k).max(1.0);
+                let thumb = NSImage::initWithSize(NSImage::alloc(), NSSize::new(tw, th));
+                #[allow(deprecated)]
+                thumb.lockFocus();
+                src.drawInRect_fromRect_operation_fraction(
+                    NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(tw, th)),
+                    NSRect::ZERO,
+                    NSCompositingOperation::Copy,
+                    1.0,
+                );
+                #[allow(deprecated)]
+                thumb.unlockFocus();
+                Some(thumb)
             })
             .clone()
     }
@@ -328,7 +362,34 @@ impl Painter {
                     }
                 }
                 Op::Alpha(a) => CGContext::set_alpha(cgc.as_deref(), a.clamp(0.0, 1.0)),
-                Op::CameraHost { .. } => {}
+                Op::FileImage { rect, path, radius } => {
+                    gc.saveGraphicsState();
+                    rounded(*rect, *radius).addClip();
+                    match self.thumbnail(path, *rect) {
+                        Some(img) => {
+                            let sz = img.size();
+                            let k = (rect.w / sz.width.max(1.0)).max(rect.h / sz.height.max(1.0));
+                            let r = rect.centered(sz.width * k, sz.height * k);
+                            // SAFETY: drawing an image into the current context.
+                            unsafe {
+                                img.drawInRect_fromRect_operation_fraction_respectFlipped_hints(
+                                    ns_rect(r),
+                                    NSRect::ZERO,
+                                    NSCompositingOperation::SourceOver,
+                                    1.0,
+                                    true,
+                                    None,
+                                )
+                            };
+                        }
+                        None => {
+                            ns_color(crate::geom::Color::CARD_HOVER).setFill();
+                            rounded(*rect, *radius).fill();
+                        }
+                    }
+                    gc.restoreGraphicsState();
+                }
+                Op::CameraHost { .. } | Op::TextEditor { .. } => {}
             }
         }
         while depth > 0 {

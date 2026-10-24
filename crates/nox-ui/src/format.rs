@@ -108,6 +108,14 @@ pub fn unavailable(u: &Unavailable) -> String {
     }
 }
 
+/// Like [`unavailable`] but keeps the whole error message (shown on two lines).
+pub fn unavailable_full(u: &Unavailable) -> String {
+    match u {
+        Unavailable::Error(e) if !e.is_empty() => e.clone(),
+        other => unavailable(other),
+    }
+}
+
 /// "dans 5 min", "dans 2 h 10", "maintenant", "il y a 3 min".
 pub fn relative(target: f64, now: f64) -> String {
     let d = target - now;

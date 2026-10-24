@@ -129,6 +129,16 @@ pub enum Op {
     PopClip,
     /// Global opacity for the following operations (cross-fades).
     Alpha(f64),
+    /// Thumbnail of an image file (screen captures), cached by path.
+    FileImage {
+        rect: Rect,
+        path: String,
+        radius: f64,
+    },
+    /// Where the native scratchpad text view is placed.
+    TextEditor {
+        rect: Rect,
+    },
     /// Where the camera preview layer is placed.
     CameraHost {
         rect: Rect,
@@ -209,6 +219,77 @@ pub struct Scene {
     pub scroll_extent: f64,
 }
 
+/// Bounding box of an operation (None for state changes such as clips).
+pub fn op_bounds(op: &Op) -> Option<Rect> {
+    let bbox = |pts: &[Point]| {
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for p in pts {
+            x0 = x0.min(p.x);
+            y0 = y0.min(p.y);
+            x1 = x1.max(p.x);
+            y1 = y1.max(p.y);
+        }
+        (x0 <= x1).then(|| Rect::new(x0, y0, x1 - x0, y1 - y0))
+    };
+    match op {
+        Op::Fill { rect, .. }
+        | Op::Stroke { rect, .. }
+        | Op::Ellipse { rect, .. }
+        | Op::Text { rect, .. }
+        | Op::Symbol { rect, .. }
+        | Op::Artwork { rect, .. }
+        | Op::FileImage { rect, .. }
+        | Op::CameraHost { rect, .. }
+        | Op::TextEditor { rect } => Some(*rect),
+        Op::Line { points, width, .. } => bbox(points).map(|r| r.inset(-width, -width)),
+        Op::Area { points, .. } => bbox(points),
+        Op::Ring { center, radius, width, .. } => {
+            let e = radius + width;
+            Some(Rect::new(center.x - e, center.y - e, 2.0 * e, 2.0 * e))
+        }
+        Op::PushClip { .. } | Op::PopClip | Op::Alpha(_) => None,
+    }
+}
+
+/// What must be redrawn to go from `old` to `new`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum Damage {
+    None,
+    Rect(Rect),
+    All,
+}
+
+pub fn damage(old: &Scene, new: &Scene) -> Damage {
+    if old.ops.len() != new.ops.len() {
+        return Damage::All;
+    }
+    let mut acc: Option<Rect> = None;
+    for (a, b) in old.ops.iter().zip(&new.ops) {
+        if a == b {
+            continue;
+        }
+        match (op_bounds(a), op_bounds(b)) {
+            (Some(x), Some(y)) => {
+                for r in [x, y] {
+                    acc = Some(match acc {
+                        None => r,
+                        Some(u) => {
+                            let x0 = u.x.min(r.x);
+                            let y0 = u.y.min(r.y);
+                            Rect::new(x0, y0, u.max_x().max(r.max_x()) - x0, u.max_y().max(r.max_y()) - y0)
+                        }
+                    });
+                }
+            }
+            _ => return Damage::All,
+        }
+    }
+    match acc {
+        None => Damage::None,
+        Some(r) => Damage::Rect(r.inset(-2.0, -2.0)),
+    }
+}
+
 impl Scene {
     pub fn fill(&mut self, rect: Rect, radius: f64, color: Color) {
         self.ops.push(Op::Fill {
@@ -280,6 +361,23 @@ impl Scene {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn damage_is_limited_to_changed_ops() {
+        let mut a = Scene::default();
+        a.fill(Rect::new(0.0, 0.0, 10.0, 10.0), 0.0, Color::WHITE);
+        a.fill(Rect::new(50.0, 0.0, 4.0, 10.0), 0.0, Color::ACCENT);
+        let mut b = a.clone();
+        assert_eq!(damage(&a, &b), Damage::None);
+        b.ops[1] = Op::Fill {
+            rect: Rect::new(50.0, 2.0, 4.0, 6.0),
+            radius: 0.0,
+            color: Color::ACCENT,
+        };
+        assert_eq!(damage(&a, &b), Damage::Rect(Rect::new(48.0, -2.0, 8.0, 14.0)));
+        b.ops.push(Op::PopClip);
+        assert_eq!(damage(&a, &b), Damage::All);
+    }
 
     #[test]
     fn hit_prefers_topmost_and_refresh_keeps_minimum() {

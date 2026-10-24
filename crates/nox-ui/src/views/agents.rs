@@ -5,8 +5,10 @@ use super::{Ctx, ListLayout, bar, empty, label, module_missing, secondary, terti
 use crate::format;
 use crate::geom::{Color, Rect};
 use crate::scene::{Action, Align, Scene, Weight};
-use nox_core::model::agents::{AgentCommand, AgentPeriod, ProviderStatus, SessionPhase};
-use nox_core::{Command, Reading, Section, Unavailable};
+use nox_core::model::agents::{
+    AgentCommand, AgentPeriod, LimitStatus, LimitWindow, ProviderStatus, SessionPhase,
+};
+use nox_core::{Command, Reading, Section};
 
 pub fn tokens(n: u64) -> String {
     let v = n as f64;
@@ -18,6 +20,29 @@ pub fn tokens(n: u64) -> String {
         format!("{}{}k", format::decimal(v / 1e3, 1), format::NNBSP)
     } else {
         n.to_string()
+    }
+}
+
+/// Usage and reset of one window, honest about estimates and renewals.
+pub fn limit_text(l: &LimitWindow, list_estimated: bool, now: f64) -> String {
+    match l.status(now) {
+        LimitStatus::Renewed { .. } => "réinitialisée — en attente d’une nouvelle lecture".into(),
+        LimitStatus::Current { resets_at, estimated } => {
+            let mut t = format::reading(&l.used_percent, |u| {
+                format!("{} utilisés", format::percent(*u))
+            });
+            if list_estimated && !t.contains("estimé") {
+                t.push_str(" (estimé)");
+            }
+            if let Some(reset) = resets_at {
+                if estimated {
+                    t.push_str(&format!(" · reset ≈ {} (estimé)", format::relative(reset, now)));
+                } else {
+                    t.push_str(&format!(" · reset {}", format::relative(reset, now)));
+                }
+            }
+            t
+        }
     }
 }
 
@@ -33,10 +58,10 @@ pub fn phase_label(p: SessionPhase) -> (&'static str, Color) {
 fn card_height(p: &ProviderStatus) -> f64 {
     let sessions = p.sessions.len().min(3) as f64;
     let limits = match &p.limits {
-        Reading::Measured(l) | Reading::Estimated(l) => l.len().min(3) as f64,
-        Reading::Unavailable(_) => 1.0,
+        Reading::Measured(l) | Reading::Estimated(l) => l.len().min(3) as f64 * 18.0,
+        Reading::Unavailable(_) => 28.0,
     };
-    30.0 + sessions * 16.0 + limits * 18.0 + 22.0
+    30.0 + sessions * 16.0 + limits + p.accounts.len() as f64 * 16.0 + 22.0
 }
 
 pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
@@ -73,6 +98,17 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             rest
         }
         None => r,
+    };
+    let r = if a.prices_updated.is_empty() {
+        r
+    } else {
+        let (body, foot) = r.split_top(r.h - 13.0, 0.0);
+        s.text(
+            foot,
+            format!("Coûts estimés au tarif API · tarifs du {}", a.prices_updated),
+            tertiary(9.0).align(Align::Right),
+        );
+        body
     };
     let mut list = ListLayout::begin(s, r, cx.scroll);
     for p in shown {
@@ -185,24 +221,9 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                         // Unknown: an empty track, not an activity pattern.
                         None => s.fill(track, 2.5, Color::TRACK),
                     }
-                    // A window whose reset passed but has no new sample is
-                    // unknown: "…", never 0 %.
-                    let reset_passed = l.resets_at.is_some_and(|r| r <= cx.now);
-                    let mut t = match &l.used_percent {
-                        Reading::Unavailable(Unavailable::Pending) if reset_passed => {
-                            "… (fenêtre réinitialisée)".to_string()
-                        }
-                        r => format::reading(r, |u| format!("{} utilisés", format::percent(*u))),
-                    };
-                    if est && !t.contains("estimé") {
-                        t.push_str(" (estimé)");
-                    }
-                    if let Some(reset) = l.resets_at.filter(|r| *r > cx.now) {
-                        let approx = if l.resets_estimated { "≈ " } else { "" };
-                        t.push_str(&format!(
-                            " · reset {approx}{}",
-                            format::relative(reset, cx.now)
-                        ));
+                    let t = limit_text(l, est, cx.now);
+                    if matches!(l.status(cx.now), LimitStatus::Current { resets_at: Some(_), .. }) {
+                        // The countdown moves; a renewed window waits for a new reading.
                         s.refresh_in(60.0);
                     }
                     s.text(txt_r, t, tertiary(10.0).align(Align::Right));
@@ -215,10 +236,28 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                         "Limites : désactivées (activez la lecture des limites dans les réglages)"
                             .to_string()
                     }
-                    other => format!("Limites : {}", format::unavailable(other)),
+                    // The whole reason, on two lines: it says what to change.
+                    other => format!("Limites : {}", format::unavailable_full(other)),
                 };
-                s.text(Rect::new(inner.x, y, inner.w, 14.0), why, tertiary(10.0));
+                s.text(Rect::new(inner.x, y, inner.w, 26.0), why, tertiary(10.0).lines(2));
+                y += 28.0;
             }
+        }
+        for acc in &p.accounts {
+            let first = match &acc.limits {
+                Reading::Measured(ls) | Reading::Estimated(ls) => ls
+                    .first()
+                    .map(|l| format!("{} : {}", l.name, limit_text(l, acc.limits.is_estimated(), cx.now)))
+                    .unwrap_or_else(|| "aucune limite".into()),
+                Reading::Unavailable(u) => format::unavailable(u),
+            };
+            let plan = acc.plan.as_deref().map(|p| format!(" ({p})")).unwrap_or_default();
+            s.text(
+                Rect::new(inner.x, y, inner.w, 14.0),
+                format!("Compte {}{plan} — {first}", acc.name),
+                tertiary(10.0),
+            );
+            y += 16.0;
         }
         if let Some(n) = &p.note {
             s.text(
@@ -238,7 +277,7 @@ mod tests {
     use nox_core::model::agents::{
         AgentProvider, AgentSession, AgentsState, LimitWindow, TokenUsage,
     };
-    use nox_core::{IslandState, Settings};
+    use nox_core::{IslandState, Settings, Unavailable};
 
     #[test]
     fn card_marks_estimates_and_unavailable() {

@@ -14,6 +14,7 @@ use nox_core::model::watch::{Rect as WatchRect, WatchCommand, WatchTrigger};
 use objc2::MainThreadOnly;
 use objc2::rc::Retained;
 use objc2_app_kit::{
+    NSApplicationActivationOptions, NSRunningApplication, NSWorkspace,
     NSApplication, NSBackingStoreType, NSColor, NSCursor, NSEvent, NSScreen, NSWindow,
     NSWindowStyleMask,
 };
@@ -39,6 +40,10 @@ objc2::define_class!(
 
 pub struct SelectionOverlay {
     window: Retained<OverlayWindow>,
+    /// Breaks the view ↔ closure cycle when the overlay closes.
+    view_cell: Rc<std::cell::RefCell<Option<Retained<CanvasView>>>>,
+    /// The app that was in front, given the keyboard back afterwards.
+    previous: Option<Retained<NSRunningApplication>>,
 }
 
 /// Converts a selection in the overlay view (flipped, screen-sized) to
@@ -66,8 +71,20 @@ pub fn normalized(a: Point, b: Point) -> Rect {
 
 fn finish(region: Option<WatchRect>, trigger: WatchTrigger) {
     if let Some(a) = app::get() {
-        if let Some(o) = a.overlay.borrow_mut().take() {
+        let overlay = a.overlay.borrow_mut().take();
+        if let Some(o) = overlay {
             o.window.orderOut(None);
+            o.view_cell.borrow_mut().take();
+            NSCursor::arrowCursor().set();
+            // Give the keyboard back to the app the user was typing in.
+            match &o.previous {
+                Some(p) if p.processIdentifier() != std::process::id() as i32 => {
+                    p.activateWithOptions(NSApplicationActivationOptions::empty());
+                }
+                _ => {
+                    NSApplication::sharedApplication(a.mtm).deactivate();
+                }
+            }
         }
         match region {
             Some(r) => {
@@ -112,6 +129,9 @@ pub fn begin(a: &App, trigger: WatchTrigger) {
     window.setBackgroundColor(Some(&NSColor::clearColor()));
     window.setLevel(objc2_app_kit::NSScreenSaverWindowLevel);
     window.setIgnoresMouseEvents(false);
+    // The dimmed veil must never end up in the module's reference capture.
+    window.setSharingType(objc2_app_kit::NSWindowSharingType::None);
+    let previous = NSWorkspace::sharedWorkspace().frontmostApplication();
 
     let start: Rc<Cell<Option<Point>>> = Rc::new(Cell::new(None));
     let current: Rc<Cell<Option<Point>>> = Rc::new(Cell::new(None));
@@ -185,7 +205,11 @@ pub fn begin(a: &App, trigger: WatchTrigger) {
     window.makeKeyAndOrderFront(None);
     window.makeFirstResponder(Some(&view));
     NSCursor::crosshairCursor().set();
-    *a.overlay.borrow_mut() = Some(SelectionOverlay { window });
+    *a.overlay.borrow_mut() = Some(SelectionOverlay {
+        window,
+        view_cell,
+        previous,
+    });
 }
 
 #[cfg(test)]
