@@ -136,8 +136,10 @@ dependencies = [
 name = "nox-power"
 version = "0.1.0"
 dependencies = [
+ "crossbeam-channel",
  "log",
  "nox-core",
+ "nox-helper",
  "serde",
  "serde_json",
 ]

@@ -8,9 +8,12 @@ rust-version.workspace = true
 
 [dependencies]
 nox-core.workspace = true
+# Wire protocol, constants and read-only IOKit probes shared with the helper.
+nox-helper = { path = "../nox-helper" }
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+crossbeam-channel.workspace = true
 
 [lints]
 workspace = true
