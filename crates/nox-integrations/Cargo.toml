@@ -11,6 +11,75 @@ nox-core.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+crossbeam-channel.workspace = true
+libc.workspace = true
+objc2.workspace = true
+block2.workspace = true
+dispatch2.workspace = true
+objc2-foundation = { workspace = true, features = [
+    "std",
+    "block2",
+    "NSAppleEventDescriptor",
+    "NSAppleScript",
+    "NSArray",
+    "NSAttributedString",
+    "NSCalendar",
+    "NSData",
+    "NSDate",
+    "NSDictionary",
+    "NSDistributedNotificationCenter",
+    "NSError",
+    "NSNotification",
+    "NSObject",
+    "NSOperation",
+    "NSPredicate",
+    "NSProgress",
+    "NSString",
+    "NSURL",
+    "NSURLRequest",
+    "NSURLResponse",
+    "NSURLSession",
+    "NSValue",
+] }
+objc2-app-kit = { workspace = true, features = [
+    "std",
+    "NSColor",
+    "NSColorSpace",
+    "NSPasteboard",
+    "NSRunningApplication",
+    "NSSharingService",
+    "NSWorkspace",
+] }
+
+objc2-event-kit = { workspace = true, features = [
+    "std",
+    "block2",
+    "objc2-app-kit",
+    "EKCalendar",
+    "EKCalendarItem",
+    "EKEvent",
+    "EKEventStore",
+    "EKObject",
+    "EKReminder",
+    "EKSource",
+    "EKTypes",
+] }
+objc2-av-foundation = { workspace = true, features = [
+    "std",
+    "block2",
+    "objc2-quartz-core",
+    "AVAnimation",
+    "AVCaptureDevice",
+    "AVCaptureInput",
+    "AVCaptureSession",
+    "AVCaptureSessionPreset",
+    "AVCaptureVideoPreviewLayer",
+    "AVMediaFormat",
+] }
+objc2-quartz-core = { workspace = true, features = ["std", "CALayer", "objc2-core-foundation"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFCGTypes"] }
+objc2-core-bluetooth = { workspace = true, features = ["std", "CBManager"] }
+objc2-io-bluetooth = { version = "0.3", features = ["std", "objc2-core-foundation", "IOBluetoothDevice", "IOBluetoothObject"] }
 
 [lints]
 workspace = true

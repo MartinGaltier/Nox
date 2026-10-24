@@ -1,5 +1,6 @@
 use super::Timestamp;
-use crate::reading::Reading;
+use crate::permissions::PermissionState;
+use crate::reading::{Reading, Unavailable};
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -77,7 +78,14 @@ pub struct Lyrics {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MusicState {
+    /// `Some` when the Now Playing source itself cannot be read (adapter
+    /// missing, crashed repeatedly…). `now_playing == None` with
+    /// `unavailable == None` means nothing is playing.
+    pub unavailable: Option<Unavailable>,
     pub now_playing: Option<NowPlaying>,
+    /// Automation (Apple Events) towards the current player, used for
+    /// shuffle/repeat/queue. `NotRequired` for players without a dictionary.
+    pub automation: PermissionState,
     pub queue: Reading<Vec<QueueItem>>,
     pub lyrics: Reading<Lyrics>,
     /// Normalised 0..1 band levels for the visualiser (empty = not available).
@@ -96,25 +104,40 @@ pub enum MusicCommand {
     SetRepeat(RepeatMode),
     /// Bring the source player to the front.
     OpenPlayer,
+    /// Ask for Automation towards the current player (shows the system
+    /// prompt once). Shuffle/repeat/queue never prompt on their own.
+    RequestAutomation,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct MusicSettings {
     pub lyrics: bool,
+    /// Look lyrics up on LRCLIB (sends title/artist/album/duration). Off by default.
+    pub lyrics_online: bool,
     pub queue: bool,
     pub visualizer: bool,
     /// Preferred player bundle id when several are playing.
     pub preferred_player: Option<String>,
+    /// Show players that are not music apps (browsers, video players…).
+    pub include_other_players: bool,
+    /// Short compact alert when the track changes.
+    pub track_change_alert: bool,
+    /// Look up a cover for browser playback that publishes none (network).
+    pub browser_artwork: bool,
 }
 
 impl Default for MusicSettings {
     fn default() -> Self {
         Self {
             lyrics: true,
+            lyrics_online: false,
             queue: true,
             visualizer: true,
             preferred_player: None,
+            include_other_players: true,
+            track_change_alert: true,
+            browser_artwork: false,
         }
     }
 }

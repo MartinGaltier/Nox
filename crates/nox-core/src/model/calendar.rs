@@ -13,15 +13,60 @@ pub struct CalendarEvent {
     /// sRGB 0..1
     pub color: [f32; 3],
     pub location: Option<String>,
-    /// Video-call / event URL if any.
+    /// The event's own URL field, if any.
     pub url: Option<String>,
+    /// Video call detected in the URL, location or notes.
+    pub call: Option<VideoCall>,
     pub is_reminder: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CallService {
+    Meet,
+    Zoom,
+    Teams,
+    FaceTime,
+    Webex,
+    Other,
+}
+
+impl CallService {
+    pub fn label(self) -> &'static str {
+        match self {
+            CallService::Meet => "Google Meet",
+            CallService::Zoom => "Zoom",
+            CallService::Teams => "Teams",
+            CallService::FaceTime => "FaceTime",
+            CallService::Webex => "Webex",
+            CallService::Other => "Visio",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VideoCall {
+    pub service: CallService,
+    pub url: String,
+}
+
+/// A calendar the user can hide in settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CalendarInfo {
+    pub id: String,
+    pub title: String,
+    pub color: [f32; 3],
+    pub source: String,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct CalendarState {
     pub access: PermissionState,
+    /// Reminders access (`NotRequired` while `show_reminders` is off).
+    pub reminders_access: PermissionState,
+    /// Sorted by start time; hidden calendars are already filtered out.
     pub events: Vec<CalendarEvent>,
+    /// All event calendars (for the "hidden calendars" setting).
+    pub calendars: Vec<CalendarInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -36,7 +81,7 @@ pub enum CalendarCommand {
 #[serde(default)]
 pub struct CalendarSettings {
     pub days_ahead: u32,
-    /// Calendar titles to hide.
+    /// Calendars to hide, by identifier (`CalendarInfo::id`) or title.
     pub hidden_calendars: Vec<String>,
     pub show_reminders: bool,
     /// Minutes before start to raise an island alert (0 = off).

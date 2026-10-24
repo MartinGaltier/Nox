@@ -1,4 +1,5 @@
 use super::Timestamp;
+use crate::permissions::PermissionState;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -28,6 +29,9 @@ pub struct DownloadItem {
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct DownloadsState {
+    /// Read access to the watched folders (~/Downloads is TCC-protected).
+    pub access: PermissionState,
+    /// In progress first, then recently finished/cancelled.
     pub items: Vec<DownloadItem>,
 }
 
