@@ -197,9 +197,11 @@ mod tests {
         };
         let copy = pos(r#"install -o root -g wheel -m 0700 "$SRC" "$TMP""#);
         let verify = pos(r#"codesign --verify --strict -R="identifier \"$LABEL\"" "$TMP""#);
+        let bootout = pos(r#"launchctl bootout "system/$LABEL""#);
         let publish = pos(r#"mv -f "$TMP" "$DST""#);
         let run = pos(r#""$DST" --print-launchd-plist"#);
-        assert!(copy < verify && verify < publish && publish < run);
+        // A failed verification must leave the previous helper running.
+        assert!(copy < verify && verify < bootout && bootout < publish && publish < run);
         for l in &lines {
             if l.starts_with('#') {
                 continue;

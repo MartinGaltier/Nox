@@ -177,7 +177,14 @@ Journal du helper : `/Library/Logs/Nox/nox-helper.log`.
   **vérifie cette copie** (`codesign --verify --strict -R='identifier
   "io.github.martingaltier.nox.helper"'`). Vérifier l'original puis le copier laisserait
   à un processus du même utilisateur le temps d'échanger le fichier entre les deux
-  étapes (TOCTOU) et de faire exécuter son code en root. Le script fait ensuite générer le plist
+  étapes (TOCTOU) et de faire exécuter son code en root. Cette vérification garantit
+  seulement que **ce qui est vérifié est ce qui est installé**. Elle **n'authentifie pas
+  l'origine** : une signature ad hoc ne prouve rien, puisque n'importe qui peut signer ad
+  hoc un binaire avec le même identifiant. Un processus du même utilisateur qui remplace
+  le helper dans Nox.app *avant* l'installation n'est donc pas détecté (voir § 7 ; seule
+  une signature Developer ID avec exigence de Team ID fermerait ce cas).
+  L'ancien helper n'est arrêté (`launchctl bootout`) qu'**après** une vérification
+  réussie : en cas d'échec (exit 65), il continue de tourner. Le script fait ensuite générer le plist
   par le helper lui-même (échappement XML testé, `plutil -lint`), puis lance
   `launchctl enable` et `bootstrap system` et attend la socket.
 * À la main : `sudo scripts/install-helper.sh /Applications/Nox.app`.
