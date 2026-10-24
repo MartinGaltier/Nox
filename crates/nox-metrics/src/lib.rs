@@ -45,6 +45,12 @@ pub mod diag {
         c.sample(60.0)
     }
 
+    /// A persistent sampler (handles kept between calls, like the worker).
+    pub fn sampler() -> impl FnMut() -> MetricsSnapshot {
+        let mut c = crate::collector::Collector::new();
+        move || c.sample(60.0)
+    }
+
     /// Samples every `interval` for `duration` on this thread; returns
     /// (samples, collector thread CPU time, wall time, setup CPU time).
     pub fn bench(duration: Duration, interval: Duration) -> (u64, Duration, Duration, Duration) {

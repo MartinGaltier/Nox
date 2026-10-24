@@ -104,7 +104,8 @@ pub fn decode(i: &BatteryInputs) -> Reading<BatteryInfo> {
 
 /// Primary: IOPS `BatteryPacks[].BatteryHealth."Maximum Capacity Percent"`,
 /// the exact "Maximum Capacity" of System Information (Apple's smoothed
-/// figure). Fallback: NominalChargeCapacity / DesignCapacity (smoothed full
+/// figure) — on macOS 27 only published to clients holding the private
+/// `com.apple.private.iokit.batterydata` entitlement, so normally absent. Fallback: NominalChargeCapacity / DesignCapacity (smoothed full
 /// charge capacity; the raw FullChargeCapacity moves with temperature and load)
 /// as an estimate.
 fn health(reg: Option<&Value>, src: Option<&Value>) -> Reading<f64> {
