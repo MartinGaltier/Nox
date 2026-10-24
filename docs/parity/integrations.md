@@ -22,7 +22,7 @@ affichées par ces tests : seulement des compteurs.
 | B7 | **bloquée** (choix vie privée) | Les vrais niveaux exigent un process tap Core Audio et l'autorisation « Enregistrement audio du système » (`NSAudioCaptureUsageDescription`), qui capte tout l'audio du Mac. Jugé trop intrusif pour un égaliseur : `levels` vide, `levels_measured = false`, et l'UI anime à partir de `playing`. |
 | B8 | à faire (partielle) | Une pochette publiée par le navigateur via MediaRemote est affichée ; la recherche de pochette en ligne (`browser_artwork`, désactivée par défaut) n'est pas implémentée. |
 | B9 | implémentée (partielle) | `include_other_players` filtre les lecteurs non musicaux (liste connue). `preferred_player` n'est **pas** honoré : l'adaptateur suit le lecteur courant du système ; l'énumération par lecteur (`MRMediaRemoteGetNowPlayingClients` + `MRPlayerPath`) reste à porter. |
-| B10 | implémentée | Changement de piste → alerte compacte (pas pour la première piste), TTL 3 s, priorité Low ; `AlertKind::Info` en attendant `AlertKind::TrackChanged` (demandé au coordinateur). Test : `track_change_bumps_generation_and_drops_stale_results`. |
+| B10 | implémentée | Changement de piste → alerte compacte `AlertKind::TrackChanged` (pas pour la première piste), TTL 3 s, priorité Low. Test : `track_change_bumps_generation_and_drops_stale_results`. |
 
 ## C. Calendrier, notifications
 
@@ -71,8 +71,8 @@ affichées par ces tests : seulement des compteurs.
 ## Fil principal
 
 Toutes les interactions AppKit / NSAppleScript / AVCapture preview / NSWorkspace / AXObserver passent
-par `nox_integrations::sys::on_main(timeout, f)` : dispatch asynchrone plus attente bornée, ou
-exécution directe si l'appel est déjà sur le main thread. Un worker ne peut donc pas figer la sortie
+par `nox_integrations::sys::on_main(timeout, f)` (alias de `nox_core::main_thread::run_with_timeout`) :
+dispatch asynchrone plus attente bornée, ou exécution directe si l'appel est déjà sur le main thread. Un worker ne peut donc pas figer la sortie
 de l'app (`on_quit` joint les modules sur le main thread).
 
 ## Tests réels (`#[ignore]`) exécutés sur cette machine
