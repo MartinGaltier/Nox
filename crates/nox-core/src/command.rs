@@ -1,5 +1,6 @@
 //! Commands sent by the UI (or menu bar) to modules.
 
+use crate::model::accessories::AccessoryCommand;
 use crate::model::captures::CaptureCommand;
 use crate::model::clipboard::ClipboardCommand;
 use crate::model::scratchpad::ScratchpadCommand;
@@ -28,6 +29,7 @@ pub enum Command {
     Captures(CaptureCommand),
     Scratchpad(ScratchpadCommand),
     Clipboard(ClipboardCommand),
+    Accessories(AccessoryCommand),
     /// The UI tells metrics whether something on screen displays them, so the
     /// collector can switch between foreground and background intervals.
     MetricsVisible(bool),
@@ -50,6 +52,7 @@ impl Command {
             Command::Captures(_) => ModuleId::Captures,
             Command::Scratchpad(_) => ModuleId::Scratchpad,
             Command::Clipboard(_) => ModuleId::Clipboard,
+            Command::Accessories(_) => ModuleId::Accessories,
             Command::MetricsVisible(_) => ModuleId::Metrics,
         }
     }

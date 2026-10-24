@@ -424,6 +424,7 @@ mod tests {
     fn state(playing: bool) -> IslandState {
         IslandState {
             music: Some(MusicState {
+                players: Default::default(),
                 unavailable: None,
                 automation: Default::default(),
                 now_playing: Some(NowPlaying {
