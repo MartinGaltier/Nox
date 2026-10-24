@@ -3,7 +3,7 @@
 //! Every external process is one-shot, on demand, bounded and killed on stop.
 
 use crate::sys::audio::{self, Dir};
-use crate::sys::{applescript, display, system, workspace};
+use crate::sys::{display, system, workspace};
 use crossbeam_channel::{Receiver, Sender, select, unbounded};
 use nox_core::model::shortcuts::{ControlsState, QuickAction, ShortcutCommand, ShortcutsState};
 use nox_core::{
@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 const SHORTCUTS: &str = "/usr/bin/shortcuts";
 const LIST_TIMEOUT: Duration = Duration::from_secs(15);
 const RUN_TIMEOUT: Duration = Duration::from_secs(120);
+const TRASH_TIMEOUT: Duration = Duration::from_secs(130);
 
 #[derive(Default)]
 pub struct ShortcutsModule {
@@ -153,21 +154,23 @@ fn perform(action: &QuickAction, token: &CancelToken) -> Result<String, String> 
             .ok_or_else(|| format!("{name} introuvable")),
         QuickAction::RunShortcut(name) => {
             let mut c = Command::new(SHORTCUTS);
-            c.arg("run").arg(name);
+            // `--`: a shortcut named like an option stays a name.
+            c.arg("run").arg("--").arg(name);
             run_bounded(c, RUN_TIMEOUT, token).map(|_| format!("« {name} » exécuté"))
         }
         QuickAction::EmptyTrash => {
-            // The UI confirms first (permanent). Finder Automation prompt on first use.
-            applescript::run(
-                "with timeout of 30 seconds\ntell application id \"com.apple.finder\" to empty trash\nend timeout",
-            )
-            .map(|_| "Corbeille vidée".to_owned())
-            .map_err(|e| match e {
-                applescript::ScriptError::NotAuthorized => {
-                    "Autorisation requise : Automatisation (Finder)".to_owned()
-                }
-                e => e.to_string(),
-            })
+            // The UI confirms first (permanent). Emptying a large Trash can
+            // take a while, so it runs in a one-shot, killable `osascript`
+            // instead of NSAppleScript on the main thread. Finder Automation
+            // prompt on first use (attributed to Nox, the responsible app).
+            let mut c = Command::new("/usr/bin/osascript");
+            c.args([
+                "-e",
+                "with timeout of 120 seconds\ntell application id \"com.apple.finder\" to empty trash\nend timeout",
+            ]);
+            run_bounded(c, TRASH_TIMEOUT, token)
+                .map(|_| "Corbeille vidée".to_owned())
+                .map_err(|e| format!("Corbeille : {e} (Automatisation pour Finder autorisée ?)"))
         }
         QuickAction::StartScreenSaver => {
             workspace::open_path("/System/Library/CoreServices/ScreenSaverEngine.app")

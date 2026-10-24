@@ -137,11 +137,42 @@ fn read_cache(dir: &Path, track: &Track, now: f64) -> Option<CacheEntry> {
     Some(e)
 }
 
+/// The cache identifies tracks listened to (its lyrics do), so it stays
+/// small: the oldest entries beyond this are removed after each write, and
+/// the whole folder is deleted when lyrics are switched off (`clear_cache`).
+pub const MAX_CACHE_ENTRIES: usize = 200;
+
 fn write_cache(dir: &Path, track: &Track, e: &CacheEntry) {
     if let Ok(bytes) = serde_json::to_vec(e)
         && let Err(err) = nox_core::paths::write_atomic(&cache_path(dir, track), &bytes)
     {
         log::debug!("lyrics cache write failed: {err}");
+    }
+    prune(dir, MAX_CACHE_ENTRIES);
+}
+
+fn prune(dir: &Path, keep: usize) {
+    let Ok(rd) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut files: Vec<(std::time::SystemTime, PathBuf)> = rd
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .collect();
+    if files.len() <= keep {
+        return;
+    }
+    files.sort_by_key(|f| std::cmp::Reverse(f.0));
+    for (_, p) in files.into_iter().skip(keep) {
+        let _ = std::fs::remove_file(p);
+    }
+}
+
+/// Deletes every cached lyric (lyrics switched off).
+pub fn clear_cache(dir: &Path) {
+    if dir.ends_with("lyrics") {
+        let _ = std::fs::remove_dir_all(dir);
     }
 }
 
@@ -271,6 +302,17 @@ mod tests {
         assert!(
             read_cache(&dir, &t, MISSING_TTL_SECS + 1.0).is_none(),
             "negative entry expires"
+        );
+        for i in 0..5 {
+            let mut x = t.clone();
+            x.title = format!("t{i}");
+            write_cache(&dir, &x, &CacheEntry::default());
+        }
+        prune(&dir, 3);
+        assert_eq!(
+            std::fs::read_dir(&dir).unwrap().count(),
+            3,
+            "cache is capped"
         );
         let _ = std::fs::remove_dir_all(dir);
     }
