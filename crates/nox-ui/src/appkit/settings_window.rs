@@ -244,6 +244,7 @@ fn module_label(id: ModuleId) -> &'static str {
         ModuleId::Captures => "Captures récentes (dossier Bureau)",
         ModuleId::Scratchpad => "Bloc-notes",
         ModuleId::Clipboard => "Presse-papiers (mémoire seulement)",
+        ModuleId::Mixer => "Mixeur par app (Enregistrement audio du système)",
     }
 }
 

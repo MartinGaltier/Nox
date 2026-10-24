@@ -3,6 +3,7 @@
 use crate::model::accessories::AccessoryCommand;
 use crate::model::captures::CaptureCommand;
 use crate::model::clipboard::ClipboardCommand;
+use crate::model::mixer::MixerCommand;
 use crate::model::scratchpad::ScratchpadCommand;
 use crate::model::{
     agents::AgentCommand, calendar::CalendarCommand, camera::CameraCommand,
@@ -30,6 +31,7 @@ pub enum Command {
     Scratchpad(ScratchpadCommand),
     Clipboard(ClipboardCommand),
     Accessories(AccessoryCommand),
+    Mixer(MixerCommand),
     /// The UI tells metrics whether something on screen displays them, so the
     /// collector can switch between foreground and background intervals.
     MetricsVisible(bool),
@@ -53,6 +55,7 @@ impl Command {
             Command::Scratchpad(_) => ModuleId::Scratchpad,
             Command::Clipboard(_) => ModuleId::Clipboard,
             Command::Accessories(_) => ModuleId::Accessories,
+            Command::Mixer(_) => ModuleId::Mixer,
             Command::MetricsVisible(_) => ModuleId::Metrics,
         }
     }
