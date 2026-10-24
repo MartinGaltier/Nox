@@ -191,6 +191,7 @@ fn assistant_line(l: Line, at: Timestamp, sidechain: bool, st: &mut FileState) -
                 .server_tool_use
                 .as_ref()
                 .map_or(0, |s| n(s.web_search_requests)),
+            reported_cost: None,
         };
         let id = msg.id.clone().unwrap_or_default();
         let req = l.request_id.clone().unwrap_or_default();

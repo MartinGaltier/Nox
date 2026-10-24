@@ -72,6 +72,9 @@ pub struct FileState {
     pub copilot_totals: std::collections::HashMap<String, Tokens>,
     pub copilot_final: bool,
     pub copilot_turn: Option<String>,
+    // OpenCode (one database holds every session)
+    pub opencode_open: std::collections::HashMap<String, bool>,
+    pub opencode_seen: std::collections::HashSet<String>,
 }
 
 /// Structural keys are written without spaces and never appear unescaped

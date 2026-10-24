@@ -12,6 +12,7 @@ log.workspace = true
 serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 memchr = "2"
+rusqlite = "0.37"
 libc.workspace = true
 objc2.workspace = true
 objc2-foundation = { workspace = true, features = ["NSString"] }

@@ -72,6 +72,8 @@ pub struct Billable {
     /// Inference pinned to the United States.
     pub domestic: bool,
     pub web_searches: u64,
+    /// Cost the agent itself reported (OpenCode), preferred over list prices.
+    pub reported_cost: Option<f64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -267,6 +269,9 @@ impl PriceList {
 
     /// USD at API list price; `None` when the model has no known price.
     pub fn cost(&self, b: &Billable, model: &str) -> Option<f64> {
+        if let Some(c) = b.reported_cost {
+            return Some(c);
+        }
         if b.aggregate && b.tokens.total() == 0 {
             return Some(0.0);
         }
