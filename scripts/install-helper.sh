@@ -28,7 +28,6 @@ if [ ! -f "$SRC" ] || [ -L "$SRC" ]; then
   echo "install-helper.sh: helper not found in $APP" >&2; exit 66
 fi
 [ -x "$CLIENT" ] || { echo "install-helper.sh: $CLIENT not found" >&2; exit 66; }
-codesign --verify --strict "$SRC" || { echo "install-helper.sh: helper signature invalid" >&2; exit 65; }
 
 # Stop a previous helper first. On SIGTERM it restores lid sleep if it had
 # changed it (and its journal is replayed by the new one otherwise).
@@ -36,8 +35,17 @@ launchctl bootout "system/$LABEL" 2>/dev/null || true
 
 install -d -o root -g wheel -m 0755 /Library/PrivilegedHelperTools
 install -d -o root -g wheel -m 0755 "$STATE_DIR" "$LOG_DIR"
+# Copy first, then verify the root-owned copy: checking "$SRC" and copying it
+# afterwards would let a same-user process swap the file in between (TOCTOU)
+# and get its code run as root.
 TMP="$DST.new.$$"
+rm -f "$TMP"
 install -o root -g wheel -m 0755 "$SRC" "$TMP"
+if ! codesign --verify --strict -R="identifier \"$LABEL\"" "$TMP"; then
+  rm -f "$TMP"
+  echo "install-helper.sh: helper signature invalid" >&2
+  exit 65
+fi
 mv -f "$TMP" "$DST"
 
 # The helper writes its own plist (paths XML-escaped by tested code).

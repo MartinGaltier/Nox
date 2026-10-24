@@ -71,7 +71,7 @@ lui-même**, même si l'app est figée :
 
 | Garde (dans le helper) | Déclencheur | Action |
 |---|---|---|
-| Batterie | sur batterie **et** charge ≤ seuil choisi par l'app (`stop_below_percent`) | restaure `SleepDisabled=0`, révoque le bail (`battery`) |
+| Batterie | sur batterie **et** charge ≤ max(seuil de l'app `stop_below_percent`, **plancher 5 %** imposé par le helper, que le client ne peut pas abaisser) | restaure `SleepDisabled=0`, révoque le bail (`battery`) |
 | Thermique | `com.apple.system.thermalpressurelevel` ≥ 2 (*heavy*) | restaure, révoque (`thermal`) |
 | Bail | aucun `heartbeat` depuis `lease` s (60 s), ou connexion fermée et non reprise sous 60 s | restaure (`lease-expired` / `client-gone`) |
 
@@ -115,7 +115,16 @@ Nox.app (utilisateur)                         nox-helper (root, launchd)
      (révocation `external`).
   4. Si la relecture est impossible, il restaure `0` par sécurité. Un journal corrompu est
      traité comme « Nox a posé 1 ».
-  5. Si `pmset` échoue, le journal est conservé et le helper réessaie toutes les 30 s.
+  5. Si `pmset` échoue, le journal est conservé et le helper réessaie toutes les 30 s,
+     à un rythme fixe : une requête entrante ne déclenche pas d'essai supplémentaire.
+  6. Le journal n'est écrit que dans un dossier appartenant à root et non inscriptible
+     par le groupe ni les autres. Le fichier temporaire est créé à neuf, sans suivre de
+     lien symbolique (`O_NOFOLLOW`).
+* **launchd :** `KeepAlive = { SuccessfulExit = false }`. Le helper est relancé après
+  un crash, mais pas après un arrêt demandé, ni après une erreur de configuration
+  permanente (chemin de socket occupé par autre chose qu'une socket). Dans ce dernier
+  cas il rejoue d'abord le journal, écrit une ligne dans le log et s'arrête, au lieu de
+  boucler toutes les 10 s.
 
 ## 4. Comportement après incident
 
@@ -163,8 +172,12 @@ Journal du helper : `/Library/Logs/Nox/nox-helper.log`.
   a pas de fichier temporaire modifiable entre l'écriture et l'exécution. Quitter Nox
   pendant la boîte de dialogue tue le processus `osascript`, ce qui abandonne la demande
   (non vérifié avec une vraie boîte de dialogue).
-* Le script vérifie la signature du helper embarqué (`codesign --verify --strict`), le
-  copie depuis `Nox.app/Contents/Library/LaunchServices/nox-helper`, fait générer le plist
+* Le script **copie d'abord** le helper depuis
+  `Nox.app/Contents/Library/LaunchServices/nox-helper` vers un fichier root, puis
+  **vérifie cette copie** (`codesign --verify --strict -R='identifier
+  "io.github.martingaltier.nox.helper"'`). Vérifier l'original puis le copier laisserait
+  à un processus du même utilisateur le temps d'échanger le fichier entre les deux
+  étapes (TOCTOU) et de faire exécuter son code en root. Le script fait ensuite générer le plist
   par le helper lui-même (échappement XML testé, `plutil -lint`), puis lance
   `launchctl enable` et `bootstrap system` et attend la socket.
 * À la main : `sudo scripts/install-helper.sh /Applications/Nox.app`.
@@ -194,8 +207,12 @@ Journal du helper : `/Library/Logs/Nox/nox-helper.log`.
   malveillant du même utilisateur qui remplacerait le binaire de Nox.app (dossier
   modifiable par un admin) pourrait obtenir un bail. Le pire qu'il puisse faire est
   l'opération autorisée elle-même : empêcher la veille capot fermé tant qu'il envoie des
-  heartbeats, toujours sous les gardes batterie et thermique du helper. Il ne peut pas
-  exécuter de commande arbitraire.
+  heartbeats, toujours sous les gardes du helper : thermique, et batterie au minimum à
+  5 % même s'il demande un seuil de 0. Il ne peut pas exécuter de commande arbitraire.
+  Comme Nox.app est elle-même modifiable par un administrateur, un attaquant capable de
+  remplacer le helper embarqué *avant* l'installation peut aussi remplacer l'app qui
+  demande le mot de passe. Seule une signature Developer ID avec exigence de Team ID
+  fermerait ce cas.
 * **Changement de session (Fast User Switching).** Le bail est conservé. Le nouvel
   utilisateur console ne peut pas le prendre (`busy`) tant que le propriétaire est
   connecté. Si le propriétaire cesse ses heartbeats, le helper restaure à l'expiration
@@ -208,6 +225,10 @@ Journal du helper : `/Library/Logs/Nox/nox-helper.log`.
   C'est volontaire.
 * **Sommeil forcé :** pendant un bail, `SleepDisabled` bloque aussi la veille demandée
   depuis le menu Pomme. C'est le comportement de macOS.
+* **Bail court :** le protocole accepte un bail de 5 s minimum (pour les tests), mais le
+  helper exécute `pmset` sur son unique thread (jusqu'à environ 18 s dans le pire cas).
+  Un client réel doit garder un bail nettement plus long : Nox utilise 60 s avec un
+  heartbeat toutes les 15 s.
 * **Délai de grâce de 60 s :** après un crash, la veille capot fermé reste désactivée
   jusqu'à 60 s, sauf si Nox est relancé avant.
 

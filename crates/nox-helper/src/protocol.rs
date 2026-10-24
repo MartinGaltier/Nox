@@ -29,6 +29,9 @@ use std::fmt;
 
 /// Longest accepted request line (bytes, without the newline).
 pub const MAX_LINE: usize = 128;
+/// The protocol accepts short leases (tests use 5 s), but the helper runs
+/// pmset on its single thread (up to ~18 s worst case), so a real client
+/// should use a lease well above that: Nox uses 60 s with 15 s heartbeats.
 pub const MIN_LEASE_SECS: u32 = 5;
 pub const MAX_LEASE_SECS: u32 = 600;
 
