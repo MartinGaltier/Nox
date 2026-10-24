@@ -123,6 +123,25 @@ pub fn valid_url(u: &str) -> bool {
         && !scheme.eq_ignore_ascii_case("file")
 }
 
+/// `shortcuts run -- <name>`: after `--` a name such as `-o /x` stays a name.
+pub fn run_shortcut_command(name: &str) -> Command {
+    let mut c = Command::new(SHORTCUTS);
+    c.arg("run").arg("--").arg(name);
+    c
+}
+
+/// Emptying a large Trash can take a while: a one-shot, killable `osascript`
+/// on a worker thread, never NSAppleScript on the main thread (which would
+/// freeze the UI). The script is constant (no user input interpolated).
+pub fn trash_command() -> Command {
+    let mut c = Command::new("/usr/bin/osascript");
+    c.args([
+        "-e",
+        "with timeout of 120 seconds\ntell application id \"com.apple.finder\" to empty trash\nend timeout",
+    ]);
+    c
+}
+
 fn perform(action: &QuickAction, token: &CancelToken) -> Result<String, String> {
     match action {
         QuickAction::LockScreen => system::lock_screen()
@@ -152,23 +171,12 @@ fn perform(action: &QuickAction, token: &CancelToken) -> Result<String, String> 
         QuickAction::OpenApp(name) => workspace::open_app(name)
             .then(|| format!("{name} ouvert"))
             .ok_or_else(|| format!("{name} introuvable")),
-        QuickAction::RunShortcut(name) => {
-            let mut c = Command::new(SHORTCUTS);
-            // `--`: a shortcut named like an option stays a name.
-            c.arg("run").arg("--").arg(name);
-            run_bounded(c, RUN_TIMEOUT, token).map(|_| format!("« {name} » exécuté"))
-        }
+        QuickAction::RunShortcut(name) => run_bounded(run_shortcut_command(name), RUN_TIMEOUT, token)
+            .map(|_| format!("« {name} » exécuté")),
         QuickAction::EmptyTrash => {
-            // The UI confirms first (permanent). Emptying a large Trash can
-            // take a while, so it runs in a one-shot, killable `osascript`
-            // instead of NSAppleScript on the main thread. Finder Automation
-            // prompt on first use (attributed to Nox, the responsible app).
-            let mut c = Command::new("/usr/bin/osascript");
-            c.args([
-                "-e",
-                "with timeout of 120 seconds\ntell application id \"com.apple.finder\" to empty trash\nend timeout",
-            ]);
-            run_bounded(c, TRASH_TIMEOUT, token)
+            // The UI confirms first (permanent). Finder Automation prompt on
+            // first use (attributed to Nox, the responsible app).
+            run_bounded(trash_command(), TRASH_TIMEOUT, token)
                 .map(|_| "Corbeille vidée".to_owned())
                 .map_err(|e| format!("Corbeille : {e} (Automatisation pour Finder autorisée ?)"))
         }
@@ -318,6 +326,28 @@ mod tests {
             parse_list("Zeta\n\n alpha \nZeta\nBeta\n"),
             vec!["alpha", "Beta", "Zeta"]
         );
+    }
+
+    #[test]
+    fn process_arguments_cannot_become_options() {
+        let c = run_shortcut_command("-o /tmp/x");
+        let args: Vec<_> = c
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(args, vec!["run", "--", "-o /tmp/x"]);
+        let t = trash_command();
+        assert_eq!(
+            t.get_program(),
+            "/usr/bin/osascript",
+            "off the main thread, killable"
+        );
+        let script: Vec<_> = t
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(script[0], "-e");
+        assert!(script[1].starts_with("with timeout of 120 seconds"));
     }
 
     #[test]

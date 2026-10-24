@@ -588,6 +588,7 @@ impl Engine {
                     self.submit(Job::Permission(g, p.bundle_id().into(), true));
                 }
             }
+            MusicCommand::ClearLyricsCache => lyrics::clear_cache(&lyrics::cache_dir()),
             MusicCommand::OpenPlayer => {
                 let pid = self.last_line.as_ref().and_then(|l| l.pid);
                 let bundle = self

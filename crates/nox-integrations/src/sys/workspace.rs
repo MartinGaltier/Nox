@@ -72,23 +72,45 @@ pub fn activate_app(pid: Option<i32>, bundle_id: Option<&str>) -> bool {
 /// Launches/activates an app by name or bundle id ("Safari", "com.apple.Safari")
 /// or by absolute `.app` path.
 pub fn open_app(name_or_id: &str) -> bool {
-    if name_or_id.starts_with('/') {
-        return open_path(name_or_id);
-    }
-    if name_or_id.contains('.') && activate_app(None, Some(name_or_id)) {
+    let Some(candidates) = app_candidates(name_or_id) else {
+        return false;
+    };
+    if name_or_id.contains('.')
+        && !name_or_id.starts_with('/')
+        && activate_app(None, Some(name_or_id))
+    {
         return true;
     }
-    for dir in [
-        "/Applications",
-        "/System/Applications",
-        "/System/Applications/Utilities",
-    ] {
-        let p = format!("{dir}/{name_or_id}.app");
-        if std::path::Path::new(&p).exists() {
-            return open_path(&p);
-        }
+    candidates
+        .iter()
+        .find(|p| std::path::Path::new(p).exists())
+        .is_some_and(|p| open_path(p))
+}
+
+/// Where an app given by name may live. `None` for names that could escape
+/// the application folders (`..`, `/` inside a name) or an absolute path
+/// that is not an `.app` bundle.
+pub fn app_candidates(name_or_id: &str) -> Option<Vec<String>> {
+    let n = name_or_id.trim();
+    if n.is_empty() || n.contains("..") || n.contains('\0') {
+        return None;
     }
-    false
+    if n.starts_with('/') {
+        return n.ends_with(".app").then(|| vec![n.to_owned()]);
+    }
+    if n.contains('/') {
+        return None;
+    }
+    Some(
+        [
+            "/Applications",
+            "/System/Applications",
+            "/System/Applications/Utilities",
+        ]
+        .iter()
+        .map(|d| format!("{d}/{n}.app"))
+        .collect(),
+    )
 }
 
 pub fn is_running(bundle_id: &str) -> bool {
@@ -140,4 +162,30 @@ pub fn airdrop(paths: &[String]) -> bool {
         true
     })
     .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn app_names_cannot_escape_application_folders() {
+        assert_eq!(
+            app_candidates("Safari").unwrap()[0],
+            "/Applications/Safari.app"
+        );
+        assert!(app_candidates("../../tmp/evil").is_none());
+        assert!(app_candidates("Utilities/../../../bin/sh").is_none());
+        assert!(app_candidates("a/b").is_none());
+        assert!(
+            app_candidates("/bin/sh").is_none(),
+            "absolute paths must be .app bundles"
+        );
+        assert_eq!(
+            app_candidates("/Applications/Calculator.app")
+                .unwrap()
+                .len(),
+            1
+        );
+    }
 }
