@@ -26,6 +26,8 @@ type SetElapsed = unsafe extern "C" fn(f64);
 type ClientString = unsafe extern "C" fn(*mut AnyObject) -> *mut NSString;
 type ClientPid = unsafe extern "C" fn(*mut AnyObject) -> i32;
 
+pub mod players;
+
 /// MediaRemote command identifiers (`MRMediaRemoteCommand`).
 pub mod command {
     pub const PLAY: u32 = 0;
@@ -78,6 +80,7 @@ pub struct MediaRemote {
     register: Option<Register>,
     send: Option<SendCommand>,
     set_elapsed: Option<SetElapsed>,
+    players_fns: players::PlayerFns,
     queue: dispatch2::DispatchRetained<DispatchQueue>,
 }
 
@@ -184,6 +187,7 @@ impl MediaRemote {
             register: sym(handle, "MRMediaRemoteRegisterForNowPlayingNotifications"),
             send: sym(handle, "MRMediaRemoteSendCommand"),
             set_elapsed: sym(handle, "MRMediaRemoteSetElapsedTime"),
+            players_fns: players::PlayerFns::load(handle),
             queue: DispatchQueue::new("io.github.martingaltier.nox.now-playing.callbacks", None),
         })
     }

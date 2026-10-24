@@ -28,6 +28,9 @@ pub enum Line {
     Sent {
         cmd: String,
         ok: bool,
+        /// Addressed to a followed player that is not the system's current.
+        #[serde(default)]
+        direct: bool,
     },
     Error {
         message: String,
@@ -58,6 +61,18 @@ pub struct StateLine {
     pub artwork_mime: Option<String>,
     /// Base64, only present when the artwork changed.
     pub artwork: Option<String>,
+    /// Every player with a track (several may publish at once).
+    pub sources: Vec<SourceLine>,
+    pub system_pid: Option<i32>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct SourceLine {
+    pub pid: i32,
+    pub bundle_id: String,
+    pub name: Option<String>,
+    pub playing: bool,
 }
 
 impl StateLine {
@@ -272,7 +287,8 @@ mod tests {
             parse_line(r#"{"type":"sent","cmd":"next","ok":false}"#),
             Some(Line::Sent {
                 cmd: "next".into(),
-                ok: false
+                ok: false,
+                direct: false
             })
         );
         let Some(Line::State(s)) = parse_line(

@@ -102,6 +102,22 @@ pub fn set_repeat(player: Player, mode: RepeatMode) -> Result<(), ScriptError> {
     run(player, &body).map(|_| ())
 }
 
+/// Transport through the player's own dictionary (Music and Spotify share
+/// these verbs). Used when MediaRemote refuses a command addressed to a
+/// player that is not the system's current one.
+pub fn transport(player: Player, cmd: &str, position: Option<f64>) -> Result<(), ScriptError> {
+    let body = match (cmd, position) {
+        ("play", _) => "play".to_owned(),
+        ("pause", _) => "pause".to_owned(),
+        ("toggle", _) => "playpause".to_owned(),
+        ("next", _) => "next track".to_owned(),
+        ("previous", _) => "previous track".to_owned(),
+        ("seek", Some(p)) if p.is_finite() && p >= 0.0 => format!("set player position to {p:.3}"),
+        _ => return Err(ScriptError::Other(0, "commande inconnue".into())),
+    };
+    run(player, &body).map(|_| ())
+}
+
 /// Tracks after the current one in Music's current playlist. This is the
 /// playlist order, not Music's "Up Next" (not scriptable): callers mark it
 /// as estimated. `Ok(None)` when shuffle makes the order meaningless.

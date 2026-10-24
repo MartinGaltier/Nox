@@ -38,6 +38,37 @@ pub struct ControlsState {
     pub brightness: Reading<f32>,
     pub output_device: Option<String>,
     pub input_device: Option<String>,
+    /// Built-in keyboard backlight 0..1.
+    pub keyboard_backlight: Reading<f32>,
+    /// Current keyboard input source and the enabled ones to switch to.
+    pub input_source: Option<InputSourceInfo>,
+    pub input_sources: Vec<InputSourceInfo>,
+    /// E8: the last volume/brightness change, for an in-island HUD. The UI
+    /// shows it for ~1.5 s after `at` (the system HUD is left untouched).
+    pub hud: Option<ControlHud>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InputSourceInfo {
+    /// `com.apple.keylayout.French`…
+    pub id: String,
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HudKind {
+    Volume,
+    Brightness,
+    Microphone,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlHud {
+    pub kind: HudKind,
+    /// 0..1 (`None` when only a mute state changed).
+    pub value: Option<f32>,
+    pub muted: bool,
+    pub at: crate::model::Timestamp,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -59,12 +90,17 @@ pub enum ShortcutCommand {
     SetMuted(bool),
     SetMicMuted(bool),
     SetBrightness(f32),
+    SetKeyboardBacklight(f32),
+    /// Input source id (`InputSourceInfo::id`).
+    SelectInputSource(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShortcutSettings {
     pub entries: Vec<ShortcutEntry>,
+    /// E8: publish `ControlsState::hud` on volume/brightness changes.
+    pub hud_in_island: bool,
 }
 
 impl Default for ShortcutSettings {
@@ -75,6 +111,7 @@ impl Default for ShortcutSettings {
             action,
         };
         Self {
+            hud_in_island: true,
             entries: vec![
                 e("Verrouiller", "lock.fill", QuickAction::LockScreen),
                 e("Capture", "camera.viewfinder", QuickAction::Screenshot),

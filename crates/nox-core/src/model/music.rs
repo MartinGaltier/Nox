@@ -92,6 +92,9 @@ pub struct MusicState {
     pub levels: Vec<f32>,
     /// Whether `levels` comes from real audio or a playback-driven animation.
     pub levels_measured: bool,
+    /// Every player currently publishing a track (the followed one included),
+    /// for a source picker; `now_playing.player` is the followed one.
+    pub players: Vec<PlayerInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

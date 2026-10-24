@@ -21,6 +21,7 @@ pub fn overlay(s: &mut IslandState, now: f64) {
     if s.music.is_none() {
         s.music = Some(MusicState {
             unavailable: None,
+            players: Default::default(),
             automation: Default::default(),
             now_playing: Some(NowPlaying {
                 player: Some(PlayerInfo {

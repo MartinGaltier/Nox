@@ -6,7 +6,7 @@
 
 use crate::sys::peripherals::{self, BtDevice, HidBattery};
 use nox_core::model::accessories::{
-    AccessoriesState, Accessory, AccessoryKind, AccessorySettings, BatteryPart,
+    AccessoriesState, Accessory, AccessoryCommand, AccessoryKind, AccessorySettings, BatteryPart,
 };
 use nox_core::permissions::PermissionState;
 use nox_core::{
@@ -24,6 +24,8 @@ const RECOVERY_MARGIN: u8 = 5;
 pub struct AccessoriesModule {
     worker: Option<Worker>,
     settings: Arc<Mutex<AccessorySettings>>,
+    /// Pending Bluetooth access request (user action), dropped on stop.
+    bluetooth_request: Option<peripherals::BluetoothRequest>,
 }
 
 impl Default for AccessoriesModule {
@@ -31,6 +33,29 @@ impl Default for AccessoriesModule {
         Self {
             worker: None,
             settings: Arc::new(Mutex::new(AccessorySettings::default())),
+            bluetooth_request: None,
+        }
+    }
+}
+
+impl AccessoriesModule {
+    /// `AccessoryCommand` handling (routed once `Command::Accessories`
+    /// exists in nox-core). Never blocks: the prompt is asynchronous and
+    /// the polling loop picks the answer up on its next pass.
+    pub fn handle(&mut self, c: AccessoryCommand) {
+        match c {
+            AccessoryCommand::RequestBluetooth => {
+                if peripherals::bluetooth_permission() == PermissionState::NotDetermined {
+                    self.bluetooth_request = Some(peripherals::request_bluetooth());
+                } else if peripherals::bluetooth_permission() == PermissionState::Denied {
+                    crate::sys::workspace::open_url(
+                        nox_core::permissions::Permission::Bluetooth.settings_url(),
+                    );
+                }
+                if let Some(w) = &self.worker {
+                    w.token().nudge();
+                }
+            }
         }
     }
 }
@@ -56,6 +81,7 @@ impl Module for AccessoriesModule {
         if let Some(mut w) = self.worker.take() {
             w.stop();
         }
+        self.bluetooth_request = None;
     }
 
     fn settings_changed(&mut self, settings: &Arc<Settings>) {
@@ -64,6 +90,11 @@ impl Module for AccessoriesModule {
             w.token().nudge();
         }
     }
+}
+
+/// IOBluetooth may be touched only when this holds (see `run`).
+pub fn uses_bluetooth(perm: PermissionState) -> bool {
+    perm == PermissionState::Granted
 }
 
 pub fn kind_from_name(name: &str) -> Option<AccessoryKind> {
@@ -301,19 +332,16 @@ pub fn symbol(k: AccessoryKind) -> &'static str {
 
 fn run(hub: Hub, settings: Arc<Mutex<AccessorySettings>>, token: CancelToken) {
     let mut monitor = Monitor::default();
-    let mut asked_bluetooth = false;
     while !token.is_cancelled() {
+        // Class-level read: never prompts, never blocks.
         let perm = peripherals::bluetooth_permission();
-        // First start: one IOBluetooth read may show the Bluetooth prompt;
-        // afterwards only read once granted (no repeated prompts).
-        let use_bt = perm == PermissionState::Granted
-            || (perm == PermissionState::NotDetermined && !asked_bluetooth);
-        if perm == PermissionState::NotDetermined {
-            asked_bluetooth = true;
-        }
-        let bt = if use_bt {
-            crate::sys::on_main(crate::sys::MAIN_TIMEOUT, peripherals::bluetooth_devices)
-                .unwrap_or_default()
+        // IOBluetooth only once Bluetooth is allowed, and on this worker
+        // thread: without the permission `+[IOBluetoothDevice pairedDevices]`
+        // blocks on a semaphore (its CoreBluetooth coordinator waits for the
+        // TCC answer); on the main thread that froze the whole app at launch.
+        // Until then only IORegistry batteries (no permission) are listed.
+        let bt = if uses_bluetooth(perm) {
+            peripherals::bluetooth_devices()
         } else {
             vec![]
         };
@@ -366,6 +394,19 @@ mod tests {
             usage_page: Some(1),
             usage: Some(2),
             address: Some("aa-bb-cc-dd-ee-02".into()),
+        }
+    }
+
+    #[test]
+    fn bluetooth_only_when_allowed() {
+        assert!(uses_bluetooth(PermissionState::Granted));
+        for p in [
+            PermissionState::NotDetermined,
+            PermissionState::Denied,
+            PermissionState::Restricted,
+            PermissionState::NotRequired,
+        ] {
+            assert!(!uses_bluetooth(p), "{p:?} must not reach IOBluetooth");
         }
     }
 

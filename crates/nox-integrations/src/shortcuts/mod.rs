@@ -1,16 +1,23 @@
 //! Quick actions (E6): lock, screenshot (Screenshot.app), dark mode, screen
 //! saver, empty Trash (Finder, Automation), open app/URL, run a Shortcut.
 //! Every external process is one-shot, on demand, bounded and killed on stop.
+//! Also the system controls (E7) and their in-island HUD (E8).
 
 use crate::sys::audio::{self, Dir};
-use crate::sys::{display, system, workspace};
+use crate::sys::{display, keyboard, system, workspace};
 use crossbeam_channel::{Receiver, Sender, select, unbounded};
-use nox_core::model::shortcuts::{ControlsState, QuickAction, ShortcutCommand, ShortcutsState};
+use nox_core::model::shortcuts::{
+    ControlHud, ControlsState, HudKind, InputSourceInfo, QuickAction, ShortcutCommand,
+    ShortcutsState,
+};
 use nox_core::{
-    CancelToken, Hub, Module, ModuleContext, ModuleError, ModuleId, Reading, Unavailable, Worker,
+    CancelToken, Hub, Module, ModuleContext, ModuleError, ModuleId, Reading, Settings, Unavailable,
+    Worker,
 };
 use std::io::Read;
 use std::process::{Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 
 const SHORTCUTS: &str = "/usr/bin/shortcuts";
@@ -22,6 +29,7 @@ const TRASH_TIMEOUT: Duration = Duration::from_secs(130);
 pub struct ShortcutsModule {
     worker: Option<Worker>,
     tx: Option<Sender<ShortcutCommand>>,
+    hud: Arc<AtomicBool>,
 }
 
 impl Module for ShortcutsModule {
@@ -34,7 +42,12 @@ impl Module for ShortcutsModule {
         let (tx, rx) = unbounded();
         let hub = ctx.hub.clone();
         hub.update(|s| s.shortcuts = Some(ShortcutsState::default()));
-        self.worker = Some(Worker::spawn("shortcuts", move |token| run(hub, rx, token)));
+        self.hud
+            .store(ctx.settings.shortcuts.hud_in_island, Ordering::SeqCst);
+        let hud = self.hud.clone();
+        self.worker = Some(Worker::spawn("shortcuts", move |token| {
+            run(hub, rx, hud, token)
+        }));
         self.tx = Some(tx);
         Ok(())
     }
@@ -50,6 +63,11 @@ impl Module for ShortcutsModule {
         if let (nox_core::Command::Shortcuts(c), Some(tx)) = (cmd, &self.tx) {
             let _ = tx.send(c);
         }
+    }
+
+    fn settings_changed(&mut self, settings: &Arc<Settings>) {
+        self.hud
+            .store(settings.shortcuts.hud_in_island, Ordering::SeqCst);
     }
 }
 
@@ -227,7 +245,55 @@ pub fn read_controls() -> ControlsState {
             .unwrap_or_else(na),
         output_device: out.and_then(audio::device_name),
         input_device: inp.and_then(audio::device_name),
+        keyboard_backlight: keyboard::backlight()
+            .map(Reading::Measured)
+            .unwrap_or_else(na),
+        input_source: keyboard::current_input_source().map(info),
+        input_sources: keyboard::input_sources().into_iter().map(info).collect(),
+        hud: None,
     }
+}
+
+fn info(s: keyboard::Source) -> InputSourceInfo {
+    InputSourceInfo {
+        id: s.id,
+        name: s.name,
+    }
+}
+
+/// The HUD to show after a control changed (E8), comparing two readings.
+pub fn hud_for(before: &ControlsState, after: &ControlsState, now: f64) -> Option<ControlHud> {
+    let v = |r: &Reading<f32>| r.value().copied();
+    let b = |r: &Reading<bool>| r.value().copied().unwrap_or(false);
+    if v(&before.volume) != v(&after.volume) || b(&before.muted) != b(&after.muted) {
+        return Some(ControlHud {
+            kind: HudKind::Volume,
+            value: v(&after.volume),
+            muted: b(&after.muted),
+            at: now,
+        });
+    }
+    if b(&before.mic_muted) != b(&after.mic_muted) {
+        return Some(ControlHud {
+            kind: HudKind::Microphone,
+            value: None,
+            muted: b(&after.mic_muted),
+            at: now,
+        });
+    }
+    let moved = |x: Option<f32>, y: Option<f32>| match (x, y) {
+        (Some(x), Some(y)) => (x - y).abs() > 0.004,
+        (x, y) => x != y,
+    };
+    if moved(v(&before.brightness), v(&after.brightness)) {
+        return Some(ControlHud {
+            kind: HudKind::Brightness,
+            value: v(&after.brightness),
+            muted: false,
+            at: now,
+        });
+    }
+    None
 }
 
 fn set_control(c: &ShortcutCommand) -> Result<(), String> {
@@ -241,13 +307,22 @@ fn set_control(c: &ShortcutCommand) -> Result<(), String> {
             ShortcutCommand::SetMicMuted(m) => audio::default_device(Dir::Input)
                 .is_some_and(|d| audio::set_muted(d, Dir::Input, m)),
             ShortcutCommand::SetBrightness(v) if v.is_finite() => display::set_brightness(v),
+            ShortcutCommand::SetKeyboardBacklight(v) if v.is_finite() => keyboard::set_backlight(v),
+            ShortcutCommand::SelectInputSource(ref id) => {
+                let id = id.clone();
+                // TIS selection belongs to the main thread.
+                crate::sys::on_main(crate::sys::MAIN_TIMEOUT, move || {
+                    keyboard::select_input_source(&id)
+                })
+                .unwrap_or(false)
+            }
             _ => false,
         };
     ok.then_some(())
         .ok_or_else(|| "réglage non pris en charge par cet appareil".to_owned())
 }
 
-fn run(hub: Hub, rx: Receiver<ShortcutCommand>, token: CancelToken) {
+fn run(hub: Hub, rx: Receiver<ShortcutCommand>, hud: Arc<AtomicBool>, token: CancelToken) {
     let mut state = ShortcutsState {
         controls: read_controls(),
         ..Default::default()
@@ -262,6 +337,27 @@ fn run(hub: Hub, rx: Receiver<ShortcutCommand>, token: CancelToken) {
         )
     };
     let mut current = devices();
+    // Brightness has no public notification; DisplayServices' private one
+    // feeds the HUD when present (registered on the main run loop).
+    let (bright_tx, bright_rx) = crossbeam_channel::bounded(1);
+    let brightness_observer = crate::sys::on_main(crate::sys::MAIN_TIMEOUT, move || {
+        display::BrightnessObserver::new(bright_tx)
+    })
+    .flatten();
+    let on_change = |state: &mut ShortcutsState| {
+        let after = read_controls();
+        let c = &mut state.controls;
+        let h = hud_for(c, &after, nox_core::model::now());
+        c.volume = after.volume;
+        c.muted = after.muted;
+        c.mic_muted = after.mic_muted;
+        c.brightness = after.brightness;
+        c.output_device = after.output_device;
+        c.input_device = after.input_device;
+        if hud.load(Ordering::SeqCst) && h.is_some() {
+            c.hud = h;
+        }
+    };
     while !token.is_cancelled() {
         select! {
             recv(rx) -> c => match c {
@@ -301,24 +397,52 @@ fn run(hub: Hub, rx: Receiver<ShortcutCommand>, token: CancelToken) {
                     drop(listeners.take());
                     listeners = Some(audio::Listeners::new(audio_tx.clone()));
                 }
-                let c = read_controls();
-                state.controls.volume = c.volume;
-                state.controls.muted = c.muted;
-                state.controls.mic_muted = c.mic_muted;
-                state.controls.output_device = c.output_device;
-                state.controls.input_device = c.input_device;
+                on_change(&mut state);
+                publish(&hub, &state);
+            },
+            recv(bright_rx) -> _ => {
+                on_change(&mut state);
                 publish(&hub, &state);
             },
             default(Duration::from_millis(500)) => {},
         }
     }
     drop(listeners);
+    if let Some(o) = brightness_observer {
+        nox_core::main_thread::run_async(move || drop(o));
+    }
     hub.update(|s| s.shortcuts = None);
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hud_follows_the_control_that_changed() {
+        let base = ControlsState {
+            volume: Reading::Measured(0.5),
+            muted: Reading::Measured(false),
+            mic_muted: Reading::Measured(false),
+            brightness: Reading::Measured(0.7),
+            ..Default::default()
+        };
+        assert_eq!(hud_for(&base, &base, 1.0), None);
+        let mut v = base.clone();
+        v.volume = Reading::Measured(0.6);
+        assert_eq!(hud_for(&base, &v, 1.0).unwrap().kind, HudKind::Volume);
+        let mut m = base.clone();
+        m.muted = Reading::Measured(true);
+        assert!(hud_for(&base, &m, 1.0).unwrap().muted);
+        let mut b = base.clone();
+        b.brightness = Reading::Measured(0.702);
+        assert_eq!(hud_for(&base, &b, 1.0), None, "sensor jitter ignored");
+        b.brightness = Reading::Measured(0.8);
+        assert_eq!(hud_for(&base, &b, 1.0).unwrap().kind, HudKind::Brightness);
+        let mut mic = base.clone();
+        mic.mic_muted = Reading::Measured(true);
+        assert_eq!(hud_for(&base, &mic, 1.0).unwrap().kind, HudKind::Microphone);
+    }
 
     #[test]
     fn parses_shortcut_list() {
@@ -412,6 +536,19 @@ mod tests {
         ) {
             assert!(audio::set_volume(d, v), "setting the same volume succeeds");
             assert!((audio::volume(d).unwrap() - v).abs() < 0.01);
+        }
+        eprintln!(
+            "keyboard backlight {:?}; input sources: {} (current known: {})",
+            c.keyboard_backlight,
+            c.input_sources.len(),
+            c.input_source.is_some()
+        );
+        if let Some(k) = c.keyboard_backlight.value().copied() {
+            assert!(
+                keyboard::set_backlight(k),
+                "setting the same backlight succeeds"
+            );
+            assert!((keyboard::backlight().unwrap() - k).abs() < 0.01);
         }
     }
 }

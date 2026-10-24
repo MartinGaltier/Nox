@@ -8,8 +8,12 @@
 //! * `{"type":"error","message":"…"}`
 //!
 //! App → adapter, one JSON object per line:
-//! `{"cmd":"play"|"pause"|"toggle"|"next"|"previous"|"refresh"}` or
-//! `{"cmd":"seek","position":12.5}`.
+//! `{"cmd":"play"|"pause"|"toggle"|"next"|"previous"|"refresh"}`,
+//! `{"cmd":"seek","position":12.5}` or
+//! `{"cmd":"config","preferred":"com.spotify.client","include_other":true}`.
+//!
+//! When several players publish, the adapter picks one with [`choose`] and
+//! lists them all in the state line's `sources`.
 
 use crate::sys::{Client, Info};
 use serde_json::{Map, Value, json};
@@ -27,6 +31,16 @@ pub enum Request {
     Previous,
     Seek(f64),
     Refresh,
+    Config(Config),
+}
+
+/// Player selection preferences sent by the app.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Config {
+    /// Bundle id preferred when several eligible players compete.
+    pub preferred: Option<String>,
+    /// Follow players that are not music apps (browsers, video players…).
+    pub include_other: bool,
 }
 
 impl Request {
@@ -39,6 +53,18 @@ impl Request {
             "next" => Self::Next,
             "previous" => Self::Previous,
             "refresh" => Self::Refresh,
+            "config" => Self::Config(Config {
+                preferred: v
+                    .get("preferred")
+                    .and_then(Value::as_str)
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty() && s.len() <= 256)
+                    .map(str::to_owned),
+                include_other: v
+                    .get("include_other")
+                    .and_then(Value::as_bool)
+                    .unwrap_or(true),
+            }),
             "seek" => {
                 let p = v.get("position")?.as_f64()?;
                 if !p.is_finite() || p < 0.0 {
@@ -58,6 +84,7 @@ impl Request {
             Self::Previous => "previous",
             Self::Seek(_) => "seek",
             Self::Refresh => "refresh",
+            Self::Config(_) => "config",
         }
     }
 }
@@ -157,6 +184,77 @@ pub fn state_reply(
     (Value::Object(m), sent_artwork)
 }
 
+const MUSIC_APPS: &[&str] = &[
+    "com.apple.Music",
+    "com.apple.iTunes",
+    "com.spotify.client",
+    "com.apple.podcasts",
+    "com.tidal.desktop",
+    "com.deezer.deezer-desktop",
+    "com.amazon.music",
+    "com.qobuz.QobuzDesktop",
+];
+
+pub fn is_music_app(bundle: &str) -> bool {
+    MUSIC_APPS.contains(&bundle)
+}
+
+/// One candidate player as seen during a read.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Source {
+    pub pid: i32,
+    /// App identity (parent app for a browser's web helper).
+    pub bundle: String,
+    pub has_track: bool,
+    pub playing: bool,
+}
+
+impl Source {
+    pub fn is_music(&self) -> bool {
+        is_music_app(&self.bundle)
+    }
+}
+
+/// Picks the player to follow. Groups, in order: playing music apps,
+/// playing other players, the previously followed other player (pausing
+/// a video never jumps to music paused earlier), paused music apps. Inside
+/// a group: the preferred app, then the previously followed one, then the
+/// system's current player, then the lowest pid (stable).
+pub fn choose(
+    sources: &[Source],
+    previous: Option<i32>,
+    system: Option<i32>,
+    cfg: &Config,
+) -> Option<usize> {
+    let ok: Vec<usize> = (0..sources.len())
+        .filter(|&i| sources[i].pid > 0 && sources[i].has_track)
+        .filter(|&i| cfg.include_other || sources[i].is_music())
+        .collect();
+    let group = |f: &dyn Fn(&Source) -> bool| -> Vec<usize> {
+        ok.iter().copied().filter(|&i| f(&sources[i])).collect()
+    };
+    let groups = [
+        group(&|s| s.is_music() && s.playing),
+        group(&|s| !s.is_music() && s.playing),
+        group(&|s| !s.is_music() && Some(s.pid) == previous),
+        group(&|s| s.is_music()),
+    ];
+    for g in groups {
+        if g.is_empty() {
+            continue;
+        }
+        let pick = |f: &dyn Fn(&Source) -> bool| g.iter().copied().find(|&i| f(&sources[i]));
+        return cfg
+            .preferred
+            .as_deref()
+            .and_then(|p| pick(&|s| s.bundle == p))
+            .or_else(|| pick(&|s| Some(s.pid) == previous))
+            .or_else(|| pick(&|s| Some(s.pid) == system))
+            .or_else(|| g.iter().copied().min_by_key(|&i| sources[i].pid));
+    }
+    None
+}
+
 /// Nothing is playing (no title).
 pub fn is_empty(info: &Info) -> bool {
     info.title.is_none()
@@ -165,6 +263,88 @@ pub fn is_empty(info: &Info) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn src(pid: i32, bundle: &str, playing: bool) -> Source {
+        Source {
+            pid,
+            bundle: bundle.into(),
+            has_track: true,
+            playing,
+        }
+    }
+
+    #[test]
+    fn chooses_players_like_vorssaint_with_preference() {
+        let all = Config {
+            preferred: None,
+            include_other: true,
+        };
+        let music = Config {
+            include_other: false,
+            ..all.clone()
+        };
+        let s = vec![
+            src(10, "com.spotify.client", true),
+            src(20, "com.apple.Music", true),
+            src(30, "com.google.Chrome", true),
+        ];
+        // Both music apps playing: the system's current one breaks the tie.
+        assert_eq!(choose(&s, None, Some(20), &all), Some(1));
+        // The preferred app wins inside its group…
+        let pref = Config {
+            preferred: Some("com.spotify.client".into()),
+            ..all.clone()
+        };
+        assert_eq!(choose(&s, Some(20), Some(20), &pref), Some(0));
+        // …but a playing music app still beats a preferred browser.
+        let pref_chrome = Config {
+            preferred: Some("com.google.Chrome".into()),
+            ..all.clone()
+        };
+        // (no preference or previous in the music group: lowest pid).
+        assert_eq!(choose(&s, None, Some(30), &pref_chrome), Some(0));
+        // Only a browser plays: followed with other players, ignored without.
+        let b = vec![
+            src(10, "com.apple.Music", false),
+            src(30, "com.google.Chrome", true),
+        ];
+        assert_eq!(choose(&b, None, Some(30), &all), Some(1));
+        assert_eq!(
+            choose(&b, None, Some(30), &music),
+            Some(0),
+            "paused music app instead"
+        );
+        // Pausing the followed video does not jump to music paused earlier.
+        let paused = vec![
+            src(10, "com.apple.Music", false),
+            src(30, "com.google.Chrome", false),
+        ];
+        assert_eq!(choose(&paused, Some(30), Some(10), &all), Some(1));
+        // Players without a track are never chosen.
+        let mut none = vec![src(10, "com.apple.Music", true)];
+        none[0].has_track = false;
+        assert_eq!(choose(&none, None, None, &all), None);
+    }
+
+    #[test]
+    fn parses_config_request() {
+        assert_eq!(
+            Request::parse(
+                r#"{"cmd":"config","preferred":"com.spotify.client","include_other":false}"#
+            ),
+            Some(Request::Config(Config {
+                preferred: Some("com.spotify.client".into()),
+                include_other: false
+            }))
+        );
+        assert_eq!(
+            Request::parse(r#"{"cmd":"config","preferred":""}"#),
+            Some(Request::Config(Config {
+                preferred: None,
+                include_other: true
+            }))
+        );
+    }
 
     #[test]
     fn base64_matches_rfc4648_vectors() {
