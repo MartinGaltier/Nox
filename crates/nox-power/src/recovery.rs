@@ -61,3 +61,54 @@ pub(crate) fn reconcile(client: &mut impl LidControl, marker: &Marker) -> String
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nox_helper::backend::FakeBackend;
+    use nox_helper::core::HelperCore;
+    use nox_helper::journal::JournalStore;
+    use nox_helper::peer::SameUserPolicy;
+    use nox_helper::server::{Server, stop_pair};
+    use std::path::PathBuf;
+
+    #[test]
+    fn relaunch_releases_the_orphaned_lease_at_once() {
+        let dir = PathBuf::from(format!("/tmp/nxr-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let sock = dir.join("h.sock");
+        let fake = FakeBackend::new();
+        let (stop, rx) = stop_pair().unwrap();
+        let mut server = Server::bind(
+            &sock,
+            SameUserPolicy {
+                allowed_client: None,
+            },
+        )
+        .unwrap();
+        let mut core = HelperCore::new(fake.clone(), JournalStore::new(dir.join("j.json")));
+        let t = std::thread::spawn(move || {
+            server.run(&mut core, &rx).unwrap();
+        });
+
+        let marker = Marker::new(dir.join("marker.json"));
+        // Previous run: acquires (default 60 s lease) then dies.
+        {
+            let mut old = HelperClient::with_socket(sock.clone(), Some(marker.clone()));
+            old.acquire(20).unwrap();
+        }
+        assert!(marker.exists());
+        assert_eq!(fake.with(|s| s.sleep_disabled), Some(true));
+
+        let mut fresh = HelperClient::with_socket(sock.clone(), Some(marker.clone()));
+        let note = reconcile(&mut fresh, &marker);
+        assert!(note.contains("rétablie"), "{note}");
+        assert_eq!(fake.with(|s| s.sleep_disabled), Some(false), "no 60 s wait");
+        assert!(!marker.exists());
+
+        stop.stop();
+        t.join().unwrap();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}

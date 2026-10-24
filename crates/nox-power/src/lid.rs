@@ -72,6 +72,10 @@ pub trait LidControl: Send {
     fn acquire(&mut self, min_battery: u8) -> Result<bool, LidError>;
     fn heartbeat(&mut self) -> Result<(), LidError>;
     fn release(&mut self) -> Result<RestoreOutcome, LidError>;
+    /// How often the engine must heartbeat while holding the lease.
+    fn heartbeat_secs(&self) -> f64 {
+        HEARTBEAT_SECS
+    }
 }
 
 /// App-side record of a held lease, so the next launch knows a previous run
@@ -115,6 +119,7 @@ pub struct HelperClient {
     conn: Option<BufReader<UnixStream>>,
     holds_lease: bool,
     marker: Option<Marker>,
+    lease_secs: u32,
 }
 
 const IO_TIMEOUT: Duration = Duration::from_secs(25);
@@ -128,6 +133,7 @@ impl HelperClient {
             conn: None,
             holds_lease: false,
             marker: Some(Marker::default_location()),
+            lease_secs: LEASE_SECS,
         }
     }
 
@@ -139,7 +145,14 @@ impl HelperClient {
             conn: None,
             holds_lease: false,
             marker,
+            lease_secs: LEASE_SECS,
         }
+    }
+
+    /// Shorter lease (tests).
+    pub fn with_lease_secs(mut self, secs: u32) -> Self {
+        self.lease_secs = secs;
+        self
     }
 
     fn connect(&mut self) -> Result<&mut BufReader<UnixStream>, LidError> {
@@ -230,7 +243,7 @@ impl LidControl for HelperClient {
 
     fn acquire(&mut self, min_battery: u8) -> Result<bool, LidError> {
         let r = self.request(Request::Acquire {
-            lease_secs: LEASE_SECS,
+            lease_secs: self.lease_secs,
             min_battery,
         });
         match r {
@@ -260,6 +273,10 @@ impl LidControl for HelperClient {
             Response::Heartbeat => Ok(()),
             other => Err(LidError::Protocol(other.encode())),
         }
+    }
+
+    fn heartbeat_secs(&self) -> f64 {
+        f64::from(self.lease_secs) / 4.0
     }
 
     fn release(&mut self) -> Result<RestoreOutcome, LidError> {

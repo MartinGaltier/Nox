@@ -226,3 +226,67 @@ pub(crate) fn run<A: crate::assertions::Assertions, L: LidControl>(
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use nox_core::model::power::{KeepAwakeDuration, KeepAwakeMode};
+
+    fn own_assertions() -> Vec<String> {
+        let out = std::process::Command::new("/usr/bin/pmset")
+            .args(["-g", "assertions"])
+            .output()
+            .unwrap();
+        let me = format!("pid {}(", std::process::id());
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .filter(|l| l.contains(&me))
+            .map(str::to_owned)
+            .collect()
+    }
+
+    fn wait(mut f: impl FnMut() -> bool) -> bool {
+        for _ in 0..100 {
+            if f() {
+                return true;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        false
+    }
+
+    /// Full module on this Mac: start → command → hub state + real assertion
+    /// → stop → nothing left (no thread, no assertion, hub slot cleared).
+    #[test]
+    #[ignore = "creates a real IOPM assertion; run manually with --ignored"]
+    fn module_lifecycle_on_this_mac() {
+        let hub = Hub::new();
+        let mut m = PowerModule::new();
+        m.start(ModuleContext {
+            hub: hub.clone(),
+            settings: Arc::new(Settings::default()),
+        })
+        .unwrap();
+        assert!(wait(|| hub.read(|s| s.power.is_some())));
+        eprintln!("initial state: {:?}", hub.read(|s| s.power.clone()));
+        m.command(Command::Power(PowerCommand::Start {
+            mode: KeepAwakeMode::SystemAndDisplay,
+            duration: KeepAwakeDuration::Minutes(15),
+        }));
+        assert!(wait(
+            || hub.read(|s| s.power.as_ref().is_some_and(|p| p.active.is_some()))
+        ));
+        let lines = own_assertions();
+        eprintln!("assertions: {lines:#?}");
+        assert!(lines.iter().any(|l| l.contains("Nox: keep Mac awake")));
+        assert!(lines.iter().any(|l| l.contains("Nox: keep display awake")));
+        assert!(
+            hub.drain_alerts()
+                .iter()
+                .any(|a| a.kind == AlertKind::KeepAwake)
+        );
+        m.stop();
+        assert!(hub.read(|s| s.power.is_none()));
+        assert!(own_assertions().is_empty(), "released on stop");
+    }
+}
