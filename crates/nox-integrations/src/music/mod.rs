@@ -434,7 +434,7 @@ impl Engine {
             return;
         };
         if alert && self.settings.track_change_alert {
-            let mut a = Alert::new(AlertKind::Info, np.title.clone(), "music.note")
+            let mut a = Alert::new(AlertKind::TrackChanged, np.title.clone(), "music.note")
                 .priority(AlertPriority::Low)
                 .ttl(3.0);
             if !np.artist.is_empty() {
