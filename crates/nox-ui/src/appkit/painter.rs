@@ -28,9 +28,12 @@ fn font_weight(w: Weight) -> f64 {
     }
 }
 
+/// Symbol cache key: name, size×4, RGBA bytes, weight.
+type SymbolKey = (String, u32, [u8; 4], u8);
+
 #[derive(Default)]
 pub struct Painter {
-    symbols: HashMap<(String, u32, [u8; 4], u8), Option<Retained<NSImage>>>,
+    symbols: HashMap<SymbolKey, Option<Retained<NSImage>>>,
     artwork: HashMap<u64, Option<Retained<NSImage>>>,
 }
 

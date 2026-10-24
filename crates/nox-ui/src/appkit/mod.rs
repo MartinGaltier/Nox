@@ -17,6 +17,8 @@ pub mod overlay;
 pub mod painter;
 pub mod screens;
 pub mod settings_window;
+#[cfg(debug_assertions)]
+pub mod snapshot;
 pub mod status;
 pub mod util;
 

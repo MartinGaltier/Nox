@@ -243,6 +243,38 @@ impl App {
         self.panel.orderFrontRegardless();
         self.on_wake();
         self.update_fullscreen();
+        #[cfg(debug_assertions)]
+        super::snapshot::schedule(self);
+    }
+
+    #[cfg(debug_assertions)]
+    pub fn with_view(&self, f: impl FnOnce(&objc2_app_kit::NSView)) {
+        f(&self.view);
+    }
+
+    /// Writes the real screen geometry and panel frame (debug verification).
+    #[cfg(debug_assertions)]
+    pub fn debug_dump(&self, path: &str) {
+        let i = self.inner.borrow();
+        let screen = screens::choose(self.mtm, i.settings.island.display);
+        let raw = screen.as_deref().map(|s| {
+            (
+                s.frame(),
+                s.safeAreaInsets(),
+                s.auxiliaryTopLeftArea(),
+                s.auxiliaryTopRightArea(),
+                s.backingScaleFactor(),
+            )
+        });
+        let text = format!(
+            "raw NSScreen (frame, safeAreaInsets, auxLeft, auxRight, scale): {raw:#?}\n\
+             geometry: {:#?}\npanel frame: {:?}\nshape size: {:?}\nsurface: {:?}\n",
+            i.model.geometry,
+            super::util::rect(self.panel.frame()),
+            i.model.size(),
+            i.model.surface,
+        );
+        let _ = std::fs::write(path, text);
     }
 
     pub fn settings(&self) -> Arc<Settings> {

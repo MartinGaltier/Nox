@@ -14,11 +14,29 @@ serde_json.workspace = true
 objc2.workspace = true
 block2.workspace = true
 dispatch2.workspace = true
-objc2-foundation.workspace = true
-objc2-app-kit.workspace = true
-objc2-quartz-core.workspace = true
-objc2-core-foundation.workspace = true
-objc2-core-graphics.workspace = true
+# Only the bindings used by nox-ui (all-default features cost hundreds of MB
+# of build artifacts and minutes of compile time). Versions match the workspace.
+objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFString", "CFDictionary"] }
+objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "objc2", "CGContext", "CGWindow", "CGDirectDisplay", "CGDisplayConfiguration", "CGColor", "CGError", "libc"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "CALayer"] }
+objc2-foundation = { version = "0.3", default-features = false, features = [
+    "std", "block2", "objc2-core-foundation", "NSArray", "NSData", "NSDate", "NSDictionary",
+    "NSEnumerator", "NSError", "NSGeometry", "NSNotification", "NSObjCRuntime", "NSObject",
+    "NSOperation", "NSRange", "NSRunLoop", "NSString", "NSTimer", "NSURL", "NSValue",
+    "NSAttributedString",
+] }
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "std", "block2", "libc", "objc2-core-foundation", "objc2-core-graphics", "objc2-quartz-core",
+    "NSActionCell", "NSAlert", "NSAppearance", "NSApplication", "NSAttributedString",
+    "NSBezierPath", "NSButton", "NSButtonCell", "NSCell", "NSColor", "NSColorSpace", "NSControl",
+    "NSCursor", "NSDragging", "NSEvent", "NSFont", "NSFontDescriptor", "NSGraphics",
+    "NSGraphicsContext", "NSHapticFeedback", "NSBitmapImageRep", "NSImage", "NSImageRep", "NSLayoutConstraint",
+    "NSMenu", "NSMenuItem", "NSMenuItemCell", "NSOpenPanel", "NSPanel", "NSParagraphStyle",
+    "NSPasteboard", "NSPopUpButton", "NSPopUpButtonCell", "NSResponder", "NSRunningApplication",
+    "NSSavePanel", "NSScreen", "NSStackView", "NSStatusBar", "NSStatusBarButton", "NSStatusItem",
+    "NSStringDrawing", "NSTabView", "NSTabViewItem", "NSText", "NSTextField", "NSTextFieldCell",
+    "NSTrackingArea", "NSUserInterfaceLayout", "NSView", "NSWindow", "NSWorkspace",
+] }
 
 [lints]
 workspace = true

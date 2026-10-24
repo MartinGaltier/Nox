@@ -90,7 +90,14 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     let art = Rect::new(main.x, main.y + 2.0, 64.0, 64.0);
     artwork(s, art, np);
     let tx = art.max_x() + 12.0;
-    let tw = (main.max_x() - tx - if ms.visualizer { 34.0 } else { 0.0 }).max(0.0);
+    let tw = (main.max_x()
+        - tx
+        - match (ms.visualizer, m.levels_measured) {
+            (true, false) => 52.0,
+            (true, true) => 34.0,
+            _ => 0.0,
+        })
+    .max(0.0);
     let title = if np.title.is_empty() {
         "Sans titre"
     } else {
@@ -125,7 +132,7 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         equalizer(s, er, &lv, Color::ACCENT);
         if !m.levels_measured {
             s.text(
-                Rect::new(er.x - 18.0, er.max_y() + 2.0, 44.0, 11.0),
+                Rect::new(er.x - 24.0, er.max_y() + 3.0, 50.0, 11.0),
                 "non mesuré",
                 tertiary(7.5).align(Align::Right),
             );

@@ -25,6 +25,10 @@ impl MonitorWindow {
     pub fn is_visible(&self) -> bool {
         self.window.isVisible()
     }
+    #[cfg(debug_assertions)]
+    pub fn with_view(&self, f: impl FnOnce(&objc2_app_kit::NSView)) {
+        f(&self.view);
+    }
     pub fn redraw(&self) {
         if self.is_visible() {
             self.view.setNeedsDisplay(true);

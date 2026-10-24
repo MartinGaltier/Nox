@@ -136,7 +136,7 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                 for l in ls.iter().take(3) {
                     let lr = Rect::new(inner.x, y, inner.w, 16.0);
                     let (name_r, rest) = lr.split_left(86.0, 6.0);
-                    let (bar_r, txt_r) = rest.split_right(150.0, 8.0);
+                    let (bar_r, txt_r) = rest.split_right((rest.w - 90.0).max(150.0), 8.0);
                     s.text(name_r, &l.name, secondary(10.5));
                     let used = l.used_percent.value().copied();
                     let color = match used {

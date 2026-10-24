@@ -103,6 +103,7 @@ pub fn unavailable(u: &Unavailable) -> String {
             let short: String = e.chars().take(40).collect();
             format!("Indisponible ({short})")
         }
+        Unavailable::Pending => "En attente de mesure".into(),
         other => other.label_fr(),
     }
 }
