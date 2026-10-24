@@ -3,6 +3,8 @@
 Statuts : **à faire** · **en cours** · **implémentée** (code + vérif automatique) · **testée** (validée sur le Mac M2 réel, preuve notée) · **bloquée** (raison).
 Une ligne « implémentée » n'est pas « testée » tant qu'une validation physique n'a pas été exécutée.
 
+Détail, preuves et commandes de vérification par domaine : `docs/parity/{interface,integrations,activities,metrics,power}.md`, `docs/METRICS_SOURCES.md`, `docs/SLEEP_RECOVERY.md`. Dernière mise à jour : 2026-10-24.
+
 Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE Automatisation (Apple Events) · FDA Accès complet au disque · SCR Enregistrement d'écran · BT Bluetooth · ADM admin une fois (helper).
 
 ## A. Îlot — cadre, interactions, intégration système
@@ -34,85 +36,85 @@ Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE
 
 | ID | Fonction | Comportement Vorssaint | Apps/services | Permissions / dépendances | Implémentation Nox | Critères de validation | Statut |
 |---|---|---|---|---|---|---|---|
-| B1 | Lecture en cours (titre, artiste, album, pochette) | MediaRemote via adaptateur chargé dans `/usr/bin/perl` | Toute app publiant Now Playing (Musique, Spotify, navigateurs, Podcasts…) | aucune TCC ; perl système | cdylib Rust `nox-nowplaying` + script perl, flux continu | Lecture Spotify/Musique → infos et pochette exactes | à faire |
-| B2 | Commandes lecture/pause/suivant/précédent | MediaRemote send command | idem | — | idem | Boutons pilotent le lecteur | à faire |
-| B3 | Progression + seek | Barre de progression, glisser pour chercher | idem | — | `elapsed_now` extrapolé | Seek déplace la lecture | à faire |
-| B4 | Lecture aléatoire / répétition | `NotchShuffleService` | Musique, Spotify | AE | AppleScript (NSAppleScript main thread) | Bascule visible dans le lecteur | à faire |
-| B5 | Paroles synchronisées | `NotchLyricsService` : LRCLIB en ligne (`notchLyricsOnline`), synchro ligne | LRCLIB | réseau | Client HTTP + cache disque | Ligne active suit la lecture | à faire |
-| B6 | File des prochains morceaux | `NowPlayingQueue` + AppleScript | Musique (et Spotify selon API) | AE / MediaRemote | idem | ≥ 3 prochains titres corrects | à faire |
-| B7 | Visualisation audio | `notchLiveEqualizer` (niveaux réels via `NotchAudioLevelService`) sinon barres animées | — | Enregistrement audio système (process tap) ou animation | Process tap Core Audio si dispo, sinon animation marquée « non mesurée » | Barres réagissent au son | à faire |
-| B8 | Pochettes navigateur | `notchBrowserCovers` (YouTube etc.) | Safari, Chrome | — | Artwork MediaRemote + fallback | — | à faire |
-| B9 | Lecteur préféré | `notchPreferredPlayer`, `notchIncludeOtherPlayers` | — | — | `MusicSettings.preferred_player` | — | à faire |
-| B10 | Activité changement de piste | `notchTrackChange`, `notchMusicActivity` : compact montre pochette + égaliseur | — | — | Alerte compacte | — | à faire |
+| B1 | Lecture en cours (titre, artiste, album, pochette) | MediaRemote via adaptateur chargé dans `/usr/bin/perl` | Toute app publiant Now Playing (Musique, Spotify, navigateurs, Podcasts…) | aucune TCC ; perl système | cdylib Rust `nox-nowplaying` + script perl, flux continu | Lecture Spotify/Musique → infos et pochette exactes | testée (source synthétique ; Spotify/Musique à valider) |
+| B2 | Commandes lecture/pause/suivant/précédent | MediaRemote send command | idem | — | idem | Boutons pilotent le lecteur | testée (source synthétique) |
+| B3 | Progression + seek | Barre de progression, glisser pour chercher | idem | — | `elapsed_now` extrapolé | Seek déplace la lecture | testée (source synthétique) |
+| B4 | Lecture aléatoire / répétition | `NotchShuffleService` | Musique, Spotify | AE | AppleScript (NSAppleScript main thread) | Bascule visible dans le lecteur | implémentée — non testée (nécessite Musique/Spotify) |
+| B5 | Paroles synchronisées | `NotchLyricsService` : LRCLIB en ligne (`notchLyricsOnline`), synchro ligne | LRCLIB | réseau | Client HTTP + cache disque | Ligne active suit la lecture | implémentée ; requête LRCLIB réelle testée |
+| B6 | File des prochains morceaux | `NowPlayingQueue` + AppleScript | Musique (et Spotify selon API) | AE / MediaRemote | idem | ≥ 3 prochains titres corrects | implémentée partielle (Musique estimé, Spotify non supporté) |
+| B7 | Visualisation audio | `notchLiveEqualizer` (niveaux réels via `NotchAudioLevelService`) sinon barres animées | — | Enregistrement audio système (process tap) ou animation | Process tap Core Audio si dispo, sinon animation marquée « non mesurée » | Barres réagissent au son | bloquée (vrais niveaux = capture audio système ; animation non mesurée) |
+| B8 | Pochettes navigateur | `notchBrowserCovers` (YouTube etc.) | Safari, Chrome | — | Artwork MediaRemote + fallback | — | partielle (pochette navigateur via MediaRemote ; recherche en ligne à faire) |
+| B9 | Lecteur préféré | `notchPreferredPlayer`, `notchIncludeOtherPlayers` | — | — | `MusicSettings.preferred_player` | — | partielle (`preferred_player` non honoré) |
+| B10 | Activité changement de piste | `notchTrackChange`, `notchMusicActivity` : compact montre pochette + égaliseur | — | — | Alerte compacte | — | implémentée |
 
 ## C. Calendrier, notifications
 
 | ID | Fonction | Comportement Vorssaint | Apps/services | Permissions / dépendances | Implémentation Nox | Critères de validation | Statut |
 |---|---|---|---|---|---|---|---|
-| C1 | Événements à venir | EventKit, bande + vue mois, `notchCalendarExcluded`, numéros de semaine | Calendrier macOS (iCloud, Google, Exchange configurés) | CAL | `objc2-event-kit` | Liste = Calendrier.app sur 7 j | à faire |
-| C2 | Compte à rebours / temps restant | `notchCalendarCountdown`, `notchCalendarTimeLeft`, `ChosenCountdowns` | — | CAL | — | — | à faire |
-| C3 | Rejoindre visio | Lien Meet/Zoom/Teams détecté | — | CAL | parse URL/notes | — | à faire |
-| C4 | Alerte avant événement | Activité îlot | — | CAL | `alert_minutes_before` | — | à faire |
-| C5 | Notifications système dans l'îlot | Lit les bannières de `com.apple.notificationcenterui` via AX, option masquer les natives (`notchDismissNativeNotifications`) | Toutes apps | AX | `AXUIElement` observer | Notification Messages → affichée dans l'îlot | à faire |
+| C1 | Événements à venir | EventKit, bande + vue mois, `notchCalendarExcluded`, numéros de semaine | Calendrier macOS (iCloud, Google, Exchange configurés) | CAL | `objc2-event-kit` | Liste = Calendrier.app sur 7 j | implémentée — non testée (permission Calendrier) |
+| C2 | Compte à rebours / temps restant | `notchCalendarCountdown`, `notchCalendarTimeLeft`, `ChosenCountdowns` | — | CAL | — | — | implémentée (données) |
+| C3 | Rejoindre visio | Lien Meet/Zoom/Teams détecté | — | CAL | parse URL/notes | — | implémentée |
+| C4 | Alerte avant événement | Activité îlot | — | CAL | `alert_minutes_before` | — | implémentée |
+| C5 | Notifications système dans l'îlot | Lit les bannières de `com.apple.notificationcenterui` via AX, option masquer les natives (`notchDismissNativeNotifications`) | Toutes apps | AX | `AXUIElement` observer | Notification Messages → affichée dans l'îlot | implémentée — non testée (Accessibilité) ; masquage natif non fait |
 
 ## D. Activités
 
 | ID | Fonction | Comportement Vorssaint | Apps/services | Permissions / dépendances | Implémentation Nox | Critères de validation | Statut |
 |---|---|---|---|---|---|---|---|
-| D1 | Minuteurs | `notchTimerMinutes`, règle de temps, son (`notchTimerSoundEnabled`), compte à rebours compact | — | — | `nox-activities::timers` | Minuteur 1 min sonne et alerte | à faire |
-| D2 | Chronomètre | `notchTimerMode` | — | — | idem, tours | — | à faire |
-| D3 | Concentration (Pomodoro) | focus/pause courte/longue/intervalle/sessions | — | — | idem | Transitions de phase + alertes | à faire |
-| D4 | Agents IA — Claude | Sessions live (hooks/logs `~/.claude/projects`), tokens, modèles, projets, limites 5 h/semaine + reset (API OAuth usage), valeur API estimée | Claude Code CLI, app Claude | lecture fichiers ; jeton OAuth Keychain si opt-in | Lecteur JSONL incrémental | Session réelle détectée, tokens = somme logs | à faire |
-| D5 | Agents IA — Codex | `~/.codex/sessions` rollouts, `rate_limits` dans les logs, comptes `CODEX_HOME` multiples, resets bancaires | Codex CLI | lecture fichiers | idem | — | à faire |
-| D6 | Agents IA — OpenCode | `~/.local/share/opencode` storage | OpenCode | lecture fichiers | idem | — | à faire |
-| D7 | Agents IA — GitHub Copilot | Logs session CLI/app, métriques à l'arrêt | Copilot CLI | lecture fichiers | idem | — | à faire |
-| D8 | Alertes fin de tâche / limite | `notchAgentsFinishAlert`, `FinishMinimum`, `LimitAlert`, `LimitThreshold` | — | — | Alertes hub | Tâche > 30 s finie → alerte | à faire |
-| D9 | Estimations coût / budget | `AgentPricing`, `notchAgentsDailyBudget`, `PriceUpdates` | Table de prix | réseau optionnel | `Reading::Estimated` | Affiché « estimé » | à faire |
-| D10 | Surveillance de zone | `NotchWatchService` : choisir zone, alerte changement / fin (`notchWatchCondition`), son | — | SCR | ScreenCaptureKit / CGWindowList | Zone qui change → alerte | à faire |
-| D11 | Compagnon animé | Mascotte : forme, palette, côté, style, visites, réactions aux événements | — | — | Rendu CG animé, humeur dérivée de l'état | Réagit (musique, agent, batterie) | à faire |
+| D1 | Minuteurs | `notchTimerMinutes`, règle de temps, son (`notchTimerSoundEnabled`), compte à rebours compact | — | — | `nox-activities::timers` | Minuteur 1 min sonne et alerte | implémentée (son non écouté) |
+| D2 | Chronomètre | `notchTimerMode` | — | — | idem, tours | — | implémentée |
+| D3 | Concentration (Pomodoro) | focus/pause courte/longue/intervalle/sessions | — | — | idem | Transitions de phase + alertes | implémentée |
+| D4 | Agents IA — Claude | Sessions live (hooks/logs `~/.claude/projects`), tokens, modèles, projets, limites 5 h/semaine + reset (API OAuth usage), valeur API estimée | Claude Code CLI, app Claude | lecture fichiers ; jeton OAuth Keychain si opt-in | Lecteur JSONL incrémental | Session réelle détectée, tokens = somme logs | testée (journaux locaux, agrégats) ; OAuth opt-in non exécutée |
+| D5 | Agents IA — Codex | `~/.codex/sessions` rollouts, `rate_limits` dans les logs, comptes `CODEX_HOME` multiples, resets bancaires | Codex CLI | lecture fichiers | idem | — | testée (jetons, limites) ; resets bancaires bloqués |
+| D6 | Agents IA — OpenCode | `~/.local/share/opencode` storage | OpenCode | lecture fichiers | idem | — | implémentée (OpenCode absent : fixtures) |
+| D7 | Agents IA — GitHub Copilot | Logs session CLI/app, métriques à l'arrêt | Copilot CLI | lecture fichiers | idem | — | implémentée (Copilot absent : fixtures) |
+| D8 | Alertes fin de tâche / limite | `notchAgentsFinishAlert`, `FinishMinimum`, `LimitAlert`, `LimitThreshold` | — | — | Alertes hub | Tâche > 30 s finie → alerte | implémentée |
+| D9 | Estimations coût / budget | `AgentPricing`, `notchAgentsDailyBudget`, `PriceUpdates` | Table de prix | réseau optionnel | `Reading::Estimated` | Affiché « estimé » | implémentée (estimé) |
+| D10 | Surveillance de zone | `NotchWatchService` : choisir zone, alerte changement / fin (`notchWatchCondition`), son | — | SCR | ScreenCaptureKit / CGWindowList | Zone qui change → alerte | implémentée (capture réelle OK ; parcours UI à valider) |
+| D11 | Compagnon animé | Mascotte : forme, palette, côté, style, visites, réactions aux événements | — | — | Rendu CG animé, humeur dérivée de l'état | Réagit (musique, agent, batterie) | implémentée (rendu : nox-ui) |
 
 ## E. Accessoires, téléchargements, fichiers, caméra, raccourcis, contrôles
 
 | ID | Fonction | Comportement Vorssaint | Apps/services | Permissions / dépendances | Implémentation Nox | Critères de validation | Statut |
 |---|---|---|---|---|---|---|---|
-| E1 | Accessoires connectés + batterie | `NotchAccessoryService` : AirPods (G/D/boîtier), claviers/souris, alerte connexion | Bluetooth, IOKit HID | BT (selon méthode) | IORegistry `BatteryPercent` + défauts Bluetooth | AirPods connectés → % affichés | à faire |
-| E2 | Alertes batterie interne | `notchLowBatteryThreshold`, `Early`, teinte, menu barre | — | — | Depuis `nox-metrics` | Seuil franchi → alerte | à faire |
-| E3 | Suivi des téléchargements | Dossier Téléchargements (signet), `.crdownload/.download/.part`, progression | Safari, Chrome, Firefox, Arc… | accès dossier | FSEvents + taille fichiers | Téléchargement réel → progression puis fin | à faire |
-| E4 | Outils de fichiers (étagère) | Déposer des fichiers sur l'îlot, AirDrop, partager, compresser, `notchDragReveal` | Finder | — | Drag & drop NSPanel | Glisser un fichier → apparaît, AirDrop ouvre | à faire |
-| E5 | Aperçu caméra | Miroir dans l'îlot | — | CAM | AVCaptureSession + preview layer, démarré à l'ouverture seulement | Voyant caméra s'allume seulement page ouverte | à faire |
-| E6 | Raccourcis / actions rapides | Accès rapide (verrouiller, capture, etc.), `notchQuickAccess*` | Raccourcis.app | — | `nox-integrations::shortcuts` | Chaque action exécutée | à faire |
-| E7 | Contrôles volume / luminosité / clavier / micro / source | `notchVolume`, `Brightness`, `KeyboardLight`, `Microphone`, `InputSource`, ordre `notchControlOrder` | — | — | CoreAudio, DisplayServices (privé) | Curseurs agissent | à faire |
-| E8 | HUD volume/luminosité dans l'îlot | `NotchVolumeKeyGate` | — | AX (event tap) | À évaluer | — | à faire |
-| E9 | Mixeur par app | section `mixer` | — | process taps CoreAudio | hors priorité (utilitaire séparé) | — | à faire |
-| E10 | Presse-papiers dans l'îlot | section `clipboard` | — | — | Historique local | — | à faire |
-| E11 | Captures récentes | section `captures` | — | — | Dossier captures | — | à faire |
-| E12 | Bloc-notes | section `scratchpad` | — | — | Fichier local | — | à faire |
+| E1 | Accessoires connectés + batterie | `NotchAccessoryService` : AirPods (G/D/boîtier), claviers/souris, alerte connexion | Bluetooth, IOKit HID | BT (selon méthode) | IORegistry `BatteryPercent` + défauts Bluetooth | AirPods connectés → % affichés | implémentée — non testée (aucun accessoire) |
+| E2 | Alertes batterie interne | `notchLowBatteryThreshold`, `Early`, teinte, menu barre | — | — | Depuis `nox-metrics` | Seuil franchi → alerte | implémentée (tests unitaires) |
+| E3 | Suivi des téléchargements | Dossier Téléchargements (signet), `.crdownload/.download/.part`, progression | Safari, Chrome, Firefox, Arc… | accès dossier | FSEvents + taille fichiers | Téléchargement réel → progression puis fin | testée (téléchargement simulé) |
+| E4 | Outils de fichiers (étagère) | Déposer des fichiers sur l'îlot, AirDrop, partager, compresser, `notchDragReveal` | Finder | — | Drag & drop NSPanel | Glisser un fichier → apparaît, AirDrop ouvre | implémentée ; compression testée |
+| E5 | Aperçu caméra | Miroir dans l'îlot | — | CAM | AVCaptureSession + preview layer, démarré à l'ouverture seulement | Voyant caméra s'allume seulement page ouverte | implémentée — non testée (permission + UI) |
+| E6 | Raccourcis / actions rapides | Accès rapide (verrouiller, capture, etc.), `notchQuickAccess*` | Raccourcis.app | — | `nox-integrations::shortcuts` | Chaque action exécutée | implémentée partielle (Concentration/NPD sans API publique) |
+| E7 | Contrôles volume / luminosité / clavier / micro / source | `notchVolume`, `Brightness`, `KeyboardLight`, `Microphone`, `InputSource`, ordre `notchControlOrder` | — | — | CoreAudio, DisplayServices (privé) | Curseurs agissent | testée partielle (volume, micro, luminosité ; clavier/source à faire) |
+| E8 | HUD volume/luminosité dans l'îlot | `NotchVolumeKeyGate` | — | AX (event tap) | À évaluer | — | à faire (évalué) |
+| E9 | Mixeur par app | section `mixer` | — | process taps CoreAudio | hors priorité (utilitaire séparé) | — | à faire (évalué : capture audio) |
+| E10 | Presse-papiers dans l'îlot | section `clipboard` | — | — | Historique local | — | à faire (évalué) |
+| E11 | Captures récentes | section `captures` | — | — | Dossier captures | — | à faire (évalué) |
+| E12 | Bloc-notes | section `scratchpad` | — | — | Fichier local | — | à faire (évalué) |
 
 ## F. Moniteur système (îlot + fenêtre)
 
 | ID | Mesure | Source Vorssaint | Source Nox (voir docs/METRICS_SOURCES.md) | Validation | Statut |
 |---|---|---|---|---|---|
-| F1 | CPU global + par cœur (P/E) | `host_processor_info` | idem (Mach) | Comparer Moniteur d'activité | à faire |
-| F2 | GPU | IOAccelerator `PerformanceStatistics` | idem (IOKit) | Comparer `ioreg` | à faire |
-| F3 | Températures CPU/GPU/batterie/SSD | SMC `SMCClient` + HID | SMC user client / IOHIDEventSystem | Plausibles, cohérentes sous charge | à faire |
-| F4 | RAM, pression, swap | `host_statistics64`, `vm.swapusage`, `kern.memorystatus_vm_pressure_level` | idem | Comparer `vm_stat`, `sysctl` | à faire |
-| F5 | Batterie : charge, secteur, santé, cycles, autonomie | IOPS + AppleSmartBattery | idem | Comparer `ioreg`/`pmset -g batt` | à faire |
-| F6 | Puissance (système, CPU, GPU) | SMC `PSTR` / IOReport | SMC + IOReport si fiable | Ordre de grandeur cohérent | à faire |
-| F7 | Débit réseau | `getifaddrs` | idem | Comparer `nettop`/`netstat -ib` | à faire |
-| F8 | Espace disque | `statfs` / volumes | idem | Comparer `df -h` | à faire |
-| F9 | Historique borné | Graphes | `MetricsHistory` (trous = None) | Test auto | implémentée (core) |
-| F10 | Ventilateurs | SMC | SMC (M2 Air : sans ventilateur → Indisponible) | — | à faire |
+| F1 | CPU global + par cœur (P/E) | `host_processor_info` | idem (Mach) | Comparer Moniteur d'activité | testée |
+| F2 | GPU | IOAccelerator `PerformanceStatistics` | idem (IOKit) | Comparer `ioreg` | testée |
+| F3 | Températures CPU/GPU/batterie/SSD | SMC `SMCClient` + HID | SMC user client / IOHIDEventSystem | Plausibles, cohérentes sous charge | testée |
+| F4 | RAM, pression, swap | `host_statistics64`, `vm.swapusage`, `kern.memorystatus_vm_pressure_level` | idem | Comparer `vm_stat`, `sysctl` | testée |
+| F5 | Batterie : charge, secteur, santé, cycles, autonomie | IOPS + AppleSmartBattery | idem | Comparer `ioreg`/`pmset -g batt` | testée (santé estimée, état indisponible) |
+| F6 | Puissance (système, CPU, GPU) | SMC `PSTR` / IOReport | SMC + IOReport si fiable | Ordre de grandeur cohérent | testée (système/GPU ; CPU/ANE indisponibles) |
+| F7 | Débit réseau | `getifaddrs` | idem | Comparer `nettop`/`netstat -ib` | testée |
+| F8 | Espace disque | `statfs` / volumes | idem | Comparer `df -h` | testée (`/` seulement) |
+| F9 | Historique borné | Graphes | `MetricsHistory` (trous = None) | Test auto | testée |
+| F10 | Ventilateurs | SMC | SMC (M2 Air : sans ventilateur → Indisponible) | — | testée (aucun ventilateur → Indisponible) |
 
 ## G. Maintien éveillé
 
 | ID | Fonction | Méthode Vorssaint | Méthode Nox | Validation | Statut |
 |---|---|---|---|---|---|
-| G1 | Mac actif, écran peut s'éteindre | `IOPMAssertion PreventUserIdleSystemSleep` | idem | `pmset -g assertions` montre l'assertion Nox | à faire |
-| G2 | Mac + écran actifs | + `PreventUserIdleDisplaySleep` | idem | idem | à faire |
-| G3 | Capot fermé sans écran externe | `pmset disablesleep 1` via règle sudoers NOPASSWD installée avec mot de passe admin | Helper launchd root minimal (socket Unix, liste blanche d'opérations), restauration au crash/reboot par le helper lui-même ; **pas de sudoers** | Test physique capot fermé (non exécutable par l'agent) | à faire |
-| G4 | Durées 15/30/60/120 min/illimitée | Oui | `KeepAwakeDuration::PRESETS` | Expiration exacte | à faire |
-| G5 | Indicateur mode + temps restant | Îlot + barre de menus | idem | — | à faire |
-| G6 | Arrêt manuel îlot + menu | Oui | idem | — | à faire |
-| G7 | Uniquement sur secteur | Oui | `only_on_ac` | Débrancher → arrêt | à faire |
-| G8 | Arrêt seuil batterie | Oui | `stop_below_percent` | — | à faire |
-| G9 | Restauration état précédent | Mémorise `SleepDisabled` initial | Journal helper + vérif avant restauration (ne pas écraser un changement utilisateur) | Tests unitaires de la logique | à faire |
+| G1 | Mac actif, écran peut s'éteindre | `IOPMAssertion PreventUserIdleSystemSleep` | idem | `pmset -g assertions` montre l'assertion Nox | testée |
+| G2 | Mac + écran actifs | + `PreventUserIdleDisplaySleep` | idem | idem | testée |
+| G3 | Capot fermé sans écran externe | `pmset disablesleep 1` via règle sudoers NOPASSWD installée avec mot de passe admin | Helper launchd root minimal (socket Unix, liste blanche d'opérations), restauration au crash/reboot par le helper lui-même ; **pas de sudoers** | Test physique capot fermé (non exécutable par l'agent) | implémentée — NON testée physiquement |
+| G4 | Durées 15/30/60/120 min/illimitée | Oui | `KeepAwakeDuration::PRESETS` | Expiration exacte | implémentée |
+| G5 | Indicateur mode + temps restant | Îlot + barre de menus | idem | — | implémentée (données ; UI en cours) |
+| G6 | Arrêt manuel îlot + menu | Oui | idem | — | implémentée (données ; UI en cours) |
+| G7 | Uniquement sur secteur | Oui | `only_on_ac` | Débrancher → arrêt | implémentée |
+| G8 | Arrêt seuil batterie | Oui | `stop_below_percent` | — | implémentée |
+| G9 | Restauration état précédent | Mémorise `SleepDisabled` initial | Journal helper + vérif avant restauration (ne pas écraser un changement utilisateur) | Tests unitaires de la logique | implémentée |
