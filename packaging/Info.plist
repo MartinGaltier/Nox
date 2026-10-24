@@ -42,6 +42,8 @@
 	<string>Nox pilote la lecture (Musique, Spotify…) et lit la file d’attente des lecteurs compatibles.</string>
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Nox affiche la batterie de vos accessoires Bluetooth.</string>
+	<key>NSDownloadsFolderUsageDescription</key>
+	<string>Nox suit la progression de vos téléchargements dans l’îlot. Rien n’est copié ni envoyé.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Martin Galtier — GPL-3.0-or-later. Inspiré de Vorssaint (GPL-3.0-or-later).</string>
 </dict>
