@@ -40,6 +40,13 @@ pub struct AccessoriesState {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub enum AccessoryCommand {
+    /// Ask for Bluetooth access (system prompt, asynchronous). Only from a
+    /// user action: the module never prompts on its own.
+    RequestBluetooth,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct AccessorySettings {
     pub alert_on_connect: bool,
