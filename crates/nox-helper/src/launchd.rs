@@ -84,8 +84,6 @@ mod tests {
 
     #[test]
     fn plutil_accepts_it() {
-        let _ =
-            std::io::Write::write_all(&mut std::io::stderr(), b"[trace] plutil_accepts_it start\n");
         let dir = std::env::temp_dir().join(format!("nox-plist-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let f = dir.join("t.plist");

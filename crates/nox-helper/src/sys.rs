@@ -94,7 +94,9 @@ impl CfOwned {
     /// # Safety
     /// `ptr` must be null or a valid CF object the caller owns.
     pub unsafe fn from_create(ptr: CFTypeRef) -> Option<Self> {
-        (!ptr.is_null()).then_some(Self(ptr))
+        // Not `then_some(Self(ptr))`: that builds the wrapper eagerly and
+        // drops it when `ptr` is null, i.e. CFRelease(NULL), which traps.
+        (!ptr.is_null()).then(|| Self(ptr))
     }
     pub fn as_ptr(&self) -> CFTypeRef {
         self.0
@@ -451,30 +453,32 @@ mod tests {
 
     // Read-only probes: safe to run anywhere, but values depend on the machine.
     #[test]
+    // Values depend on the machine (a CI VM has no lid or battery); this
+    // only checks that every probe degrades to None/Err instead of crashing.
     fn probes_do_not_crash() {
-        // Uncaptured (direct stderr write) so a hard crash still shows where.
-        fn trace(msg: &str) {
-            use std::io::Write;
-            let _ = writeln!(std::io::stderr().lock(), "[probe] {msg}");
-        }
-        trace("SleepDisabled…");
-        trace(&format!("SleepDisabled: {:?}", sleep_disabled()));
-        trace("power source…");
-        trace(&format!("power source: {:?}", power_source()));
-        trace("thermal…");
-        trace(&format!("thermal pressure: {:?}", thermal_pressure()));
-        trace("clamshell…");
-        trace(&format!(
+        eprintln!("SleepDisabled: {:?}", sleep_disabled());
+        eprintln!("power source: {:?}", power_source());
+        eprintln!("thermal pressure: {:?}", thermal_pressure());
+        eprintln!(
             "clamshell closed: {:?}, causes sleep: {:?}",
             clamshell_closed(),
             clamshell_causes_sleep()
-        ));
+        );
+    }
+
+    /// Regression (CI SIGTRAP on macos-15 VMs, which publish no
+    /// `AppleClamshellState`): a missing registry property is an error, not a
+    /// CFRelease(NULL) trap.
+    #[test]
+    fn missing_registry_property_is_an_error() {
+        let r = root_domain_bool("NoxNoSuchProperty");
+        assert!(r.is_err(), "{r:?}");
+        // SAFETY: a null pointer is explicitly allowed by `from_create`.
+        assert!(unsafe { CfOwned::from_create(std::ptr::null()) }.is_none());
     }
 
     #[test]
     fn threshold_guard() {
-        let _ =
-            std::io::Write::write_all(&mut std::io::stderr(), b"[trace] threshold_guard start\n");
         let p = PowerSourceInfo {
             on_battery: true,
             battery_percent: Some(20),
@@ -500,8 +504,6 @@ mod tests {
 
     #[test]
     fn own_peer_identity() {
-        let _ =
-            std::io::Write::write_all(&mut std::io::stderr(), b"[trace] own_peer_identity start\n");
         let (a, _b) = std::os::unix::net::UnixStream::pair().unwrap();
         use std::os::fd::AsRawFd;
         // SAFETY: getuid has no preconditions.

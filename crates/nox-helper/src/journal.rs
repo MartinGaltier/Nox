@@ -138,8 +138,6 @@ mod tests {
 
     #[test]
     fn store_load_clear() {
-        let _ =
-            std::io::Write::write_all(&mut std::io::stderr(), b"[trace] store_load_clear start\n");
         let dir = std::env::temp_dir().join(format!("nox-journal-{}", std::process::id()));
         let store = JournalStore::new(dir.join("helper-state.json"));
         assert_eq!(store.load(), Loaded::Absent);
