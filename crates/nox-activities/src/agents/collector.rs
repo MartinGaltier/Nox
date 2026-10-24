@@ -85,6 +85,8 @@ pub struct Collector {
     budget_fired_day: Option<i64>,
     first_snapshot: bool,
     pid_alive: fn(i32) -> bool,
+    /// `$CODEX_HOME` captured at creation (tests clear it).
+    codex_home_env: Option<PathBuf>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -133,12 +135,18 @@ impl Collector {
             budget_fired_day: None,
             first_snapshot: true,
             pid_alive: registry::pid_alive,
+            codex_home_env: std::env::var_os("CODEX_HOME")
+                .map(PathBuf::from)
+                .filter(|p| p.is_absolute()),
         }
     }
 
+    /// Test isolation: injected process liveness, and no `$CODEX_HOME`
+    /// from the environment running the tests.
     #[cfg(test)]
-    pub fn with_pid_check(mut self, f: fn(i32) -> bool) -> Self {
-        self.pid_alive = f;
+    pub fn isolated(mut self, alive: fn(i32) -> bool) -> Self {
+        self.pid_alive = alive;
+        self.codex_home_env = None;
         self
     }
 
@@ -154,9 +162,9 @@ impl Collector {
     }
 
     fn refresh_accounts(&mut self, s: &AgentSettings) {
-        let default = std::env::var_os("CODEX_HOME")
-            .map(PathBuf::from)
-            .filter(|p| p.is_absolute())
+        let default = self
+            .codex_home_env
+            .clone()
             .unwrap_or_else(|| self.home.join(".codex"));
         let mut v = vec![Account {
             name: String::new(),
@@ -633,12 +641,11 @@ impl Collector {
             let Reading::Measured(used) = w.used_percent else {
                 continue;
             };
-            let key = format!(
-                "{provider:?}:{}:{}:{}",
-                account.unwrap_or(""),
-                w.name,
-                w.resets_at.map(|r| (r / 600.0).round() as i64).unwrap_or(0)
-            );
+            // One key per window: after a renewal its usage falls below the
+            // threshold again, so the next crossing alerts again. (The renewal
+            // time is not part of the key: Codex reports it with seconds of
+            // jitter between readings.)
+            let key = format!("{provider:?}:{}:{}", account.unwrap_or(""), w.name);
             let prev = self.limit_prev.insert(key, used);
             if prev.is_some_and(|p| p < threshold) && used >= threshold {
                 out.push(AgentEvent::Limit {
@@ -974,11 +981,18 @@ pub(crate) mod tests {
         home
     }
 
+    /// Renewal time shared by every reading of the fixture's window.
+    pub const RESETS_AT: i64 = 4_102_444_800; // 2100-01-01
+
     pub fn codex_count(at: f64, used: f64, total: u64) -> String {
+        codex_count_resets(at, used, total, RESETS_AT)
+    }
+
+    pub fn codex_count_resets(at: f64, used: f64, total: u64, resets: i64) -> String {
         format!(
             r#"{{"timestamp":"{}","type":"event_msg","payload":{{"type":"token_count","info":{{"total_token_usage":{{"input_tokens":{total},"output_tokens":10}}}},"rate_limits":{{"limit_id":"codex","plan_type":"plus","primary":{{"used_percent":{used},"window_minutes":300,"resets_at":{}}}}}}}}}"#,
             iso(at),
-            (at + 3600.0) as i64
+            resets
         )
     }
 
@@ -986,7 +1000,7 @@ pub(crate) mod tests {
     fn end_to_end_on_synthetic_home() {
         let now = nox_core::model::now();
         let home = fake_home("e2e", now);
-        let mut c = Collector::new(home.clone()).with_pid_check(|pid| pid == 4242);
+        let mut c = Collector::new(home.clone()).isolated(|pid| pid == 4242);
         let s = AgentSettings::default();
 
         assert!(c.tick(&s, now).is_empty(), "history is not news");
@@ -1040,11 +1054,13 @@ pub(crate) mod tests {
         );
         assert!(
             ev.iter()
-                .any(|e| matches!(e, AgentEvent::Live(Event::NeedsInput { .. })))
+                .any(|e| matches!(e, AgentEvent::Live(Event::NeedsInput { .. }))),
+            "{ev:?}"
         );
         assert!(
             ev.iter()
-                .any(|e| matches!(e, AgentEvent::Limit { used, .. } if *used == 85.0))
+                .any(|e| matches!(e, AgentEvent::Limit { used, .. } if *used == 85.0)),
+            "{ev:?}"
         );
         assert_eq!(
             st.providers[0].sessions[0].phase,
@@ -1062,7 +1078,7 @@ pub(crate) mod tests {
     fn disabled_providers_are_not_read() {
         let now = nox_core::model::now();
         let home = fake_home("off", now);
-        let mut c = Collector::new(home.clone());
+        let mut c = Collector::new(home.clone()).isolated(|_| false);
         let s = AgentSettings {
             enabled: vec![AgentProvider::Codex],
             ..Default::default()
@@ -1076,6 +1092,82 @@ pub(crate) mod tests {
                 .keys()
                 .all(|p| !p.to_string_lossy().contains(".claude"))
         );
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn dead_pid_registry_entry_is_ignored() {
+        let now = nox_core::model::now();
+        let home = fake_home("deadpid", now);
+        // Left behind by a crashed CLI: its process is gone.
+        append(
+            &home.join(".claude/sessions/4242.json"),
+            r#"{"pid":4242,"sessionId":"s1","status":"waiting","waitingFor":"permission"}"#,
+        );
+        let mut c = Collector::new(home.clone()).isolated(|_| false);
+        let s = AgentSettings::default();
+        c.tick(&s, now);
+        let ev = c.tick(&s, now + 1.0);
+        assert!(
+            !ev.iter()
+                .any(|e| matches!(e, AgentEvent::Live(Event::NeedsInput { .. }))),
+            "{ev:?}"
+        );
+        let (st, _) = c.snapshot(&s, now + 1.0);
+        let phase = st.providers[0].sessions[0].phase;
+        assert_eq!(
+            phase,
+            SessionPhase::Working,
+            "log heuristics, not the stale registry"
+        );
+        assert_eq!(c.session_pid("s1"), None);
+        let _ = std::fs::remove_dir_all(home);
+    }
+
+    #[test]
+    fn codex_home_from_environment_is_not_used_in_tests() {
+        let c = Collector::new(PathBuf::from("/nonexistent")).isolated(|_| false);
+        assert!(c.codex_home_env.is_none());
+    }
+
+    #[test]
+    fn limit_alert_survives_renewal_jitter_and_rearms_after_reset() {
+        let now = nox_core::model::now();
+        let home = fake_home("limits", now);
+        let log = home.join(".codex/sessions/2026/10/24/rollout-x.jsonl");
+        let mut c = Collector::new(home.clone()).isolated(|_| false);
+        let s = AgentSettings::default();
+        let crossed = |c: &mut Collector, t: f64| {
+            c.tick(&s, t);
+            c.snapshot(&s, t)
+                .1
+                .iter()
+                .filter(|e| matches!(e, AgentEvent::Limit { .. }))
+                .count()
+        };
+        assert_eq!(crossed(&mut c, now), 0, "70 % at start: below threshold");
+        // Same window, renewal time a few seconds off (Codex jitter).
+        append(
+            &log,
+            &codex_count_resets(now - 0.5, 85.0, 900, RESETS_AT + 7),
+        );
+        assert_eq!(crossed(&mut c, now + 1.0), 1);
+        append(
+            &log,
+            &codex_count_resets(now - 0.4, 90.0, 950, RESETS_AT - 3),
+        );
+        assert_eq!(crossed(&mut c, now + 2.0), 0, "once per crossing");
+        // After a renewal usage restarts low, then crosses again.
+        append(
+            &log,
+            &codex_count_resets(now - 0.3, 5.0, 960, RESETS_AT + 18_000),
+        );
+        assert_eq!(crossed(&mut c, now + 3.0), 0);
+        append(
+            &log,
+            &codex_count_resets(now - 0.2, 81.0, 970, RESETS_AT + 18_000),
+        );
+        assert_eq!(crossed(&mut c, now + 4.0), 1);
         let _ = std::fs::remove_dir_all(home);
     }
 }
