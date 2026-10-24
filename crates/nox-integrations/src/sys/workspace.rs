@@ -1,13 +1,16 @@
 //! NSWorkspace / NSRunningApplication / NSPasteboard / NSSharingService.
 //! Everything that can show UI runs on the main thread.
 
+use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
+use objc2::runtime::ProtocolObject;
 use objc2_app_kit::{
-    NSApplicationActivationOptions, NSPasteboard, NSPasteboardTypeString, NSRunningApplication,
-    NSSharingService, NSSharingServiceNameSendViaAirDrop, NSWorkspace,
+    NSApplicationActivationOptions, NSImage, NSPasteboard, NSPasteboardTypeString,
+    NSPasteboardWriting, NSRunningApplication, NSSharingService,
+    NSSharingServiceNameSendViaAirDrop, NSWorkspace,
 };
-use objc2_foundation::{NSArray, NSString, NSURL};
+use objc2_foundation::{NSArray, NSFileManager, NSString, NSURL};
 
 fn file_url(path: &str) -> Retained<NSURL> {
     NSURL::fileURLWithPath(&NSString::from_str(path))
@@ -162,6 +165,32 @@ pub fn airdrop(paths: &[String]) -> bool {
         true
     })
     .unwrap_or(false)
+}
+
+/// Puts the image at `path` on the general pasteboard (as an image, not a
+/// file reference). `false` if the file is not a readable image.
+pub fn copy_image(path: &str) -> bool {
+    let path = path.to_owned();
+    super::on_main(super::MAIN_TIMEOUT, move || {
+        let Some(img) =
+            NSImage::initWithContentsOfFile(NSImage::alloc(), &NSString::from_str(&path))
+        else {
+            return false;
+        };
+        let pb = NSPasteboard::generalPasteboard();
+        pb.clearContents();
+        let obj: Retained<ProtocolObject<dyn NSPasteboardWriting>> =
+            ProtocolObject::from_retained(img);
+        pb.writeObjects(&NSArray::from_retained_slice(&[obj]))
+    })
+    .unwrap_or(false)
+}
+
+/// Moves a file to the Trash (recoverable). Thread-safe Foundation call.
+pub fn move_to_trash(path: &str) -> Result<(), String> {
+    NSFileManager::defaultManager()
+        .trashItemAtURL_resultingItemURL_error(&file_url(path), None)
+        .map_err(|e| e.localizedDescription().to_string())
 }
 
 #[cfg(test)]

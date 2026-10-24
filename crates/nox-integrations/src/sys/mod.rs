@@ -10,6 +10,7 @@ pub mod eventkit;
 pub mod fsevents;
 pub mod http;
 pub mod peripherals;
+pub mod prefs;
 pub mod progress;
 pub mod system;
 pub mod workspace;
