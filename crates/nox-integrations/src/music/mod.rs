@@ -33,6 +33,8 @@ use std::time::{Duration, Instant};
 
 /// Bounded restarts: the adapter is never relaunched in a loop.
 const MAX_RESTARTS: u32 = 3;
+/// Absolute cap per module start, even if each crash follows a healthy run.
+const MAX_TOTAL_RESTARTS: u32 = 10;
 const HEALTHY_RESET: Duration = Duration::from_secs(300);
 /// Players publish "nothing" briefly between tracks; wait before clearing.
 const EMPTY_GRACE: Duration = Duration::from_millis(1500);
@@ -205,6 +207,7 @@ struct Engine {
     events_tx: Sender<Event>,
     events_rx: Receiver<Event>,
     restarts: u32,
+    total_restarts: u32,
     launched_at: Option<Instant>,
     relaunch_at: Option<Instant>,
     empty_since: Option<Instant>,
@@ -231,6 +234,7 @@ impl Engine {
             events_tx,
             events_rx,
             restarts: 0,
+            total_restarts: 0,
             launched_at: None,
             relaunch_at: None,
             empty_since: None,
@@ -348,7 +352,8 @@ impl Engine {
             Event::Exited => {
                 self.adapter.take();
                 self.restarts += 1;
-                if self.restarts > MAX_RESTARTS {
+                self.total_restarts += 1;
+                if self.restarts > MAX_RESTARTS || self.total_restarts > MAX_TOTAL_RESTARTS {
                     self.fail(Unavailable::Error("adaptateur Now Playing arrêté".into()));
                 } else {
                     let delay = Duration::from_secs(1 << self.restarts);
@@ -596,6 +601,9 @@ impl Engine {
     }
 
     fn on_settings(&mut self, s: MusicSettings) {
+        if self.settings.lyrics && !s.lyrics {
+            lyrics::clear_cache(&lyrics::cache_dir());
+        }
         let refetch = s.lyrics != self.settings.lyrics
             || s.lyrics_online != self.settings.lyrics_online
             || s.queue != self.settings.queue
@@ -870,7 +878,14 @@ mod tests {
         }
         let pids = || {
             std::process::Command::new("/usr/bin/pgrep")
-                .args(["-f", "now-playing.pl"])
+                // Only adapters spawned by this test process (an open Nox
+                // app has its own).
+                .args([
+                    "-P",
+                    &std::process::id().to_string(),
+                    "-f",
+                    "now-playing.pl",
+                ])
                 .output()
                 .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_owned())
                 .unwrap_or_default()

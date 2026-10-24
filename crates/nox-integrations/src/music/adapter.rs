@@ -81,11 +81,14 @@ pub enum Event {
 }
 
 /// Finds the perl script and the adapter library:
-/// 1. `NOX_NOWPLAYING_DIR` (both files inside);
+/// 1. `NOX_NOWPLAYING_DIR` (both files inside; debug builds only);
 /// 2. the app bundle (`Contents/Resources`);
 /// 3. a development tree (`target/<profile>` + `packaging/resources`).
 pub fn locate() -> Result<(PathBuf, PathBuf), String> {
     let mut candidates: Vec<(PathBuf, PathBuf)> = Vec::new();
+    // Development override only: in release, nothing in the environment can
+    // choose the library perl loads.
+    #[cfg(debug_assertions)]
     if let Some(d) = std::env::var_os("NOX_NOWPLAYING_DIR") {
         let d = PathBuf::from(d);
         candidates.push((d.join(SCRIPT), d.join(LIBRARY)));
@@ -126,11 +129,15 @@ impl Adapter {
             .arg(script)
             .arg(library)
             .arg("watch")
-            // A user's perl environment must not inject code into the adapter.
-            .env_remove("PERL5LIB")
-            .env_remove("PERLLIB")
-            .env_remove("PERL5OPT")
-            .env_remove("PERL5DB")
+            // A clean environment: nothing (PERL5LIB, PERL5OPT, PERLIO…) may
+            // inject code into the adapter. HOME/TMPDIR for Foundation.
+            .env_clear()
+            .envs(
+                ["HOME", "TMPDIR", "USER", "LOGNAME"]
+                    .iter()
+                    .filter_map(|k| std::env::var_os(k).map(|v| (*k, v))),
+            )
+            .env("PATH", "/usr/bin:/bin")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

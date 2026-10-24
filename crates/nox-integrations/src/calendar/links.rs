@@ -3,6 +3,11 @@
 use nox_core::model::calendar::{CallService, VideoCall};
 
 fn classify(url: &str) -> Option<CallService> {
+    // `\` is a path separator for WHATWG URL parsers ("evil.com\@zoom.us"
+    // opens evil.com): refuse it, and anything non-ASCII, outright.
+    if !url.is_ascii() || url.contains('\\') {
+        return None;
+    }
     let lower = url.to_ascii_lowercase();
     let (scheme, rest) = lower.split_once("://")?;
     match scheme {
@@ -117,6 +122,8 @@ mod tests {
     #[test]
     fn ignores_lookalikes_and_plain_pages() {
         assert_eq!(svc("https://zoom.us.evil.example/j/1"), None);
+        assert_eq!(svc("https://evil.com\\@zoom.us/j/1"), None);
+        assert_eq!(svc("https://zооm.us/j/1"), None, "Cyrillic homoglyphs");
         assert_eq!(svc("https://notzoom.us/j/1"), None);
         assert_eq!(svc("https://zoom.us/pricing"), None);
         assert_eq!(svc("https://meet.google.com/"), None);

@@ -61,9 +61,13 @@ pub fn get(
     let task = unsafe { session.dataTaskWithRequest_completionHandler(&request, &block) };
     task.resume();
     session.finishTasksAndInvalidate();
-    let r = rx
-        .recv_timeout(timeout * 2)
-        .map_err(|_| "request timed out".to_string())?;
+    let r = match rx.recv_timeout(timeout * 2) {
+        Ok(r) => r,
+        Err(_) => {
+            task.cancel();
+            return Err("request timed out".into());
+        }
+    };
     if let Ok(resp) = &r
         && resp.body.len() > max_bytes
     {

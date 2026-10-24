@@ -102,7 +102,9 @@ pub fn compress_command(paths: &[PathBuf]) -> Result<(Command, PathBuf), String>
         let mut c = Command::new("/usr/bin/zip");
         c.args(["-r", "-y", "-q"]).arg(&out).current_dir(&parent);
         for p in paths {
-            c.arg(p.file_name().ok_or("nom invalide")?);
+            // "./name": a file named "-T" / "-TT" must never be read as a
+            // zip option (-TT runs a command).
+            c.arg(Path::new(".").join(p.file_name().ok_or("nom invalide")?));
         }
         Ok((c, out))
     }
@@ -287,6 +289,25 @@ mod tests {
         assert!(item_for(2, &d.join("missing").to_string_lossy()).is_none());
         std::fs::write(d.join("a.txt.zip"), b"").unwrap();
         assert_eq!(unique_zip(&d, "a.txt"), d.join("a.txt 2.zip"));
+        let _ = std::fs::remove_dir_all(d);
+    }
+
+    #[test]
+    fn option_like_names_are_not_options() {
+        let d = tmp("inject");
+        // zip runs -TT's command in the archive's folder: it would create PWNED there.
+        let marker = d.join("PWNED");
+        let names = ["-T", "-TT", "touch PWNED"];
+        for n in names {
+            std::fs::write(d.join(n), b"x").unwrap();
+        }
+        let paths: Vec<PathBuf> = names.iter().map(|n| d.join(n)).collect();
+        let out = compress(&paths, &CancelToken::new()).unwrap();
+        assert!(
+            !marker.exists(),
+            "zip must not run a command from a file name"
+        );
+        assert!(std::fs::metadata(out).unwrap().len() > 0);
         let _ = std::fs::remove_dir_all(d);
     }
 
