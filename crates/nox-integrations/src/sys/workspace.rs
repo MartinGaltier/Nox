@@ -1,7 +1,6 @@
 //! NSWorkspace / NSRunningApplication / NSPasteboard / NSSharingService.
 //! Everything that can show UI runs on the main thread.
 
-use nox_core::main_thread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_app_kit::{
@@ -17,16 +16,20 @@ fn file_url(path: &str) -> Retained<NSURL> {
 /// Opens a URL (http(s), x-apple.systempreferences:, facetime:, zoommtg:…).
 pub fn open_url(url: &str) -> bool {
     let url = url.to_owned();
-    main_thread::run_sync(move || {
+    super::on_main(super::MAIN_TIMEOUT, move || {
         NSURL::URLWithString(&NSString::from_str(&url))
             .is_some_and(|u| NSWorkspace::sharedWorkspace().openURL(&u))
     })
+    .unwrap_or(false)
 }
 
 /// Opens a file or folder with its default application.
 pub fn open_path(path: &str) -> bool {
     let path = path.to_owned();
-    main_thread::run_sync(move || NSWorkspace::sharedWorkspace().openURL(&file_url(&path)))
+    super::on_main(super::MAIN_TIMEOUT, move || {
+        NSWorkspace::sharedWorkspace().openURL(&file_url(&path))
+    })
+    .unwrap_or(false)
 }
 
 /// Selects the given items in Finder.
@@ -35,18 +38,19 @@ pub fn reveal(paths: &[String]) -> bool {
         return false;
     }
     let paths = paths.to_vec();
-    main_thread::run_sync(move || {
+    super::on_main(super::MAIN_TIMEOUT, move || {
         let urls: Vec<Retained<NSURL>> = paths.iter().map(|p| file_url(p)).collect();
         let array = NSArray::from_retained_slice(&urls);
         NSWorkspace::sharedWorkspace().activateFileViewerSelectingURLs(&array);
         true
     })
+    .unwrap_or(false)
 }
 
 /// Brings a running app to the front (by pid), else launches it by bundle id.
 pub fn activate_app(pid: Option<i32>, bundle_id: Option<&str>) -> bool {
     let bundle_id = bundle_id.map(str::to_owned);
-    main_thread::run_sync(move || {
+    super::on_main(super::MAIN_TIMEOUT, move || {
         if let Some(app) =
             pid.and_then(NSRunningApplication::runningApplicationWithProcessIdentifier)
             && app.activateWithOptions(NSApplicationActivationOptions::ActivateAllWindows)
@@ -62,6 +66,7 @@ pub fn activate_app(pid: Option<i32>, bundle_id: Option<&str>) -> bool {
             None => false,
         }
     })
+    .unwrap_or(false)
 }
 
 /// Launches/activates an app by name or bundle id ("Safari", "com.apple.Safari")
@@ -100,20 +105,21 @@ pub fn app_name(pid: i32) -> Option<String> {
 
 pub fn copy_text(text: &str) -> bool {
     let text = text.to_owned();
-    main_thread::run_sync(move || {
+    super::on_main(super::MAIN_TIMEOUT, move || {
         let pb = NSPasteboard::generalPasteboard();
         pb.clearContents();
         // SAFETY: `NSPasteboardTypeString` is an immutable AppKit constant.
         let ty = unsafe { NSPasteboardTypeString };
         pb.setString_forType(&NSString::from_str(&text), ty)
     })
+    .unwrap_or(false)
 }
 
 /// Opens the AirDrop sheet for the given files. `false` when AirDrop is
 /// unavailable (Wi-Fi/Bluetooth off, or the items are not shareable).
 pub fn airdrop(paths: &[String]) -> bool {
     let paths = paths.to_vec();
-    main_thread::run_sync(move || {
+    super::on_main(super::MAIN_TIMEOUT, move || {
         // SAFETY: immutable AppKit constant.
         let name = unsafe { NSSharingServiceNameSendViaAirDrop };
         let Some(service) = NSSharingService::sharingServiceNamed(name) else {
@@ -133,4 +139,5 @@ pub fn airdrop(paths: &[String]) -> bool {
         }
         true
     })
+    .unwrap_or(false)
 }

@@ -42,7 +42,8 @@ fn classify(code: i64, message: String) -> ScriptError {
 /// hung target cannot block the main thread for long.
 pub fn run(source: &str) -> Result<Option<String>, ScriptError> {
     let source = source.to_owned();
-    nox_core::main_thread::run_sync(move || run_here(&source))
+    super::on_main(super::MAIN_TIMEOUT, move || run_here(&source))
+        .unwrap_or(Err(ScriptError::Timeout))
 }
 
 fn run_here(source: &str) -> Result<Option<String>, ScriptError> {
