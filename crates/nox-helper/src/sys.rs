@@ -48,6 +48,7 @@ unsafe extern "C" {
     ) -> Boolean;
     fn CFDictionaryGetTypeID() -> CFTypeID;
     fn CFDictionaryGetValue(d: CFDictionaryRef, key: *const c_void) -> *const c_void;
+    fn CFArrayGetTypeID() -> CFTypeID;
     fn CFArrayGetCount(a: CFArrayRef) -> CFIndex;
     fn CFArrayGetValueAtIndex(a: CFArrayRef, idx: CFIndex) -> *const c_void;
 }
@@ -93,7 +94,9 @@ impl CfOwned {
     /// # Safety
     /// `ptr` must be null or a valid CF object the caller owns.
     pub unsafe fn from_create(ptr: CFTypeRef) -> Option<Self> {
-        (!ptr.is_null()).then_some(Self(ptr))
+        // Not `then_some(Self(ptr))`: that builds the wrapper eagerly and
+        // drops it when `ptr` is null, i.e. CFRelease(NULL), which traps.
+        (!ptr.is_null()).then(|| Self(ptr))
     }
     pub fn as_ptr(&self) -> CFTypeRef {
         self.0
@@ -284,7 +287,9 @@ pub fn power_source() -> Option<PowerSourceInfo> {
         let providing = cf_string(IOPSGetProvidingPowerSourceType(blob.as_ptr()))?;
         let on_battery = providing == "Battery Power";
         let mut battery_percent = None;
-        if let Some(list) = CfOwned::from_create(IOPSCopyPowerSourcesList(blob.as_ptr())) {
+        if let Some(list) = CfOwned::from_create(IOPSCopyPowerSourcesList(blob.as_ptr()))
+            && CFGetTypeID(list.as_ptr()) == CFArrayGetTypeID()
+        {
             for i in 0..CFArrayGetCount(list.as_ptr()) {
                 let ps = CFArrayGetValueAtIndex(list.as_ptr(), i);
                 let d = IOPSGetPowerSourceDescription(blob.as_ptr(), ps);
@@ -300,7 +305,8 @@ pub fn power_source() -> Option<PowerSourceInfo> {
                     && max > 0
                     && cur >= 0
                 {
-                    battery_percent = Some(((cur * 100 + max / 2) / max).clamp(0, 100) as u8);
+                    let pct = cur.saturating_mul(100).saturating_add(max / 2) / max;
+                    battery_percent = Some(pct.clamp(0, 100) as u8);
                 }
             }
         }
@@ -447,6 +453,8 @@ mod tests {
 
     // Read-only probes: safe to run anywhere, but values depend on the machine.
     #[test]
+    // Values depend on the machine (a CI VM has no lid or battery); this
+    // only checks that every probe degrades to None/Err instead of crashing.
     fn probes_do_not_crash() {
         eprintln!("SleepDisabled: {:?}", sleep_disabled());
         eprintln!("power source: {:?}", power_source());
@@ -456,6 +464,17 @@ mod tests {
             clamshell_closed(),
             clamshell_causes_sleep()
         );
+    }
+
+    /// Regression (CI SIGTRAP on macos-15 VMs, which publish no
+    /// `AppleClamshellState`): a missing registry property is an error, not a
+    /// CFRelease(NULL) trap.
+    #[test]
+    fn missing_registry_property_is_an_error() {
+        let r = root_domain_bool("NoxNoSuchProperty");
+        assert!(r.is_err(), "{r:?}");
+        // SAFETY: a null pointer is explicitly allowed by `from_create`.
+        assert!(unsafe { CfOwned::from_create(std::ptr::null()) }.is_none());
     }
 
     #[test]
