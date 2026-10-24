@@ -61,6 +61,20 @@ objc2-event-kit = { workspace = true, features = [
     "EKSource",
     "EKTypes",
 ] }
+objc2-av-foundation = { workspace = true, features = [
+    "std",
+    "block2",
+    "objc2-quartz-core",
+    "AVAnimation",
+    "AVCaptureDevice",
+    "AVCaptureInput",
+    "AVCaptureSession",
+    "AVCaptureSessionPreset",
+    "AVCaptureVideoPreviewLayer",
+    "AVMediaFormat",
+] }
+objc2-quartz-core = { workspace = true, features = ["std", "CALayer", "objc2-core-foundation"] }
+objc2-core-foundation = { workspace = true, features = ["std", "CFCGTypes"] }
 
 [lints]
 workspace = true
