@@ -787,16 +787,38 @@ mod tests {
         {
             std::thread::sleep(Duration::from_millis(50));
         }
+        // NOX_EXPECT_PLAYING=1: a test player is running; wait for its
+        // track and its (asynchronously published) artwork.
+        let expect_playing = std::env::var_os("NOX_EXPECT_PLAYING").is_some();
+        if expect_playing {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            while Instant::now() < deadline
+                && hub.read(|s| {
+                    s.music
+                        .as_ref()
+                        .is_some_and(|m| m.now_playing.as_ref().is_none_or(|n| n.artwork.is_none()))
+                })
+            {
+                std::thread::sleep(Duration::from_millis(50));
+            }
+        }
         let state = hub.read(|s| s.music.clone()).expect("music slot");
         eprintln!(
             "unavailable={:?} now_playing={:?}",
             state.unavailable,
-            state
-                .now_playing
-                .as_ref()
-                .map(|n| (&n.title, &n.player, n.playing))
+            state.now_playing.as_ref().map(|n| (
+                &n.title,
+                &n.player,
+                n.playing,
+                n.duration,
+                n.elapsed_now(nox_core::model::now()),
+                n.artwork.as_ref().map(|a| a.len()),
+            ))
         );
         assert_eq!(state.unavailable, None, "adapter answered");
+        if expect_playing {
+            assert!(state.now_playing.is_some(), "running player detected");
+        }
         let pids = || {
             std::process::Command::new("/usr/bin/pgrep")
                 .args(["-f", "now-playing.pl"])
