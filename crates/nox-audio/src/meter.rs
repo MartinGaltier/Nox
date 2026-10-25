@@ -60,7 +60,13 @@ pub enum MeterEvent {
 pub struct LevelMeter {
     stop: Option<mpsc::Sender<()>>,
     thread: Option<JoinHandle<()>>,
+    /// Disconnected when the meter thread returns (its sender is dropped).
+    done: Option<mpsc::Receiver<()>>,
 }
+
+/// Longest `stop()` waits for the thread. Building a tap can block (e.g. a
+/// Bluetooth output reconnecting); quitting must never hang on it.
+const STOP_WAIT: Duration = Duration::from_secs(2);
 
 impl LevelMeter {
     /// Starts reading `pid`'s audio on a new thread and returns at once
@@ -74,21 +80,35 @@ impl LevelMeter {
         on_event: impl FnMut(MeterEvent) + Send + 'static,
     ) -> std::io::Result<Self> {
         let (tx, rx) = mpsc::channel();
+        let (done_tx, done_rx) = mpsc::channel::<()>();
         let thread = std::thread::Builder::new()
             .name("nox-audio-meter".into())
-            .spawn(move || run(pid, config, rx, on_event))?;
+            .spawn(move || {
+                let _done = done_tx;
+                run(pid, config, rx, on_event)
+            })?;
         Ok(Self {
             stop: Some(tx),
             thread: Some(thread),
+            done: Some(done_rx),
         })
     }
 
+    /// Stops the meter. Waits at most [`STOP_WAIT`]; a thread still stuck in
+    /// tap creation is detached and exits (destroying its tap) as soon as it
+    /// sees the closed stop channel.
     pub fn stop(&mut self) {
         self.stop.take();
-        if let Some(t) = self.thread.take()
-            && t.join().is_err()
-        {
-            log::error!("audio meter thread panicked");
+        let finished = match self.done.take() {
+            Some(done) => !matches!(done.recv_timeout(STOP_WAIT), Err(RecvTimeoutError::Timeout)),
+            None => true,
+        };
+        if let Some(t) = self.thread.take() {
+            if !finished {
+                log::warn!("audio meter thread did not stop within {STOP_WAIT:?}: detached");
+            } else if t.join().is_err() {
+                log::error!("audio meter thread panicked");
+            }
         }
     }
 
