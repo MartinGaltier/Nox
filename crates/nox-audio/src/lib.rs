@@ -3,7 +3,8 @@
 //! * [`meter::LevelMeter`] — live levels of the current player (B7), for the
 //!   music module: start it only while live levels are enabled, the player
 //!   plays and the music section is visible.
-//! * Per-app volume (E9) — see docs/AUDIO.md (in progress).
+//! * [`mixer_module`] — per-app volume (E9), `ModuleId::Mixer`; see
+//!   docs/AUDIO.md.
 //!
 //! Privacy: a tap needs the "System Audio Recording" permission
 //! (`NSAudioCaptureUsageDescription`), asked by macOS the first time a tap is
@@ -14,10 +15,13 @@
 
 pub mod analysis;
 pub mod meter;
+pub mod mixer;
+pub mod render;
 pub mod routing;
 mod sys;
 
 pub use meter::{LevelMeter, MeterConfig, MeterEvent};
+pub use mixer::module as mixer_module;
 
 /// Process taps exist from macOS 14.2; the process-object properties Nox
 /// relies on are stable from 14.4 (same floor as the reference app).
@@ -120,21 +124,22 @@ pub mod diag {
             ring: ring.clone(),
             tap_channels: 2,
         });
-        let cpu0 = cpu_time();
         let ptr = (&*client as *const crate::meter::IoClient)
             .cast_mut()
             .cast::<std::ffi::c_void>();
         // SAFETY: `client` outlives `io` (dropped after it below).
         let io = unsafe { hal::IoProc::start(agg.id, crate::meter::spike_io, ptr) }
             .map_err(|s| s.to_string())?;
-        let t = Instant::now();
+        // Steady state only: aggregate creation and IOProc start excluded.
+        std::thread::sleep(Duration::from_millis(500));
+        crate::meter::SPIKE_CYCLES.store(0, std::sync::atomic::Ordering::Relaxed);
+        let cpu0 = cpu_time();
         std::thread::sleep(dur);
-        drop(io);
         let used = cpu_time().saturating_sub(cpu0);
         let cycles = crate::meter::SPIKE_CYCLES.swap(0, std::sync::atomic::Ordering::Relaxed);
+        drop(io);
         drop(client);
         drop(agg);
-        let _ = t;
         Ok((cycles, used))
     }
 
