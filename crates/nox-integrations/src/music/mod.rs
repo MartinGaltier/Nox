@@ -10,6 +10,7 @@
 //! `now_playing.playing`.
 
 pub mod adapter;
+pub mod artwork;
 pub mod automation;
 pub mod lrc;
 pub mod lyrics;
@@ -132,9 +133,11 @@ enum Job {
     SetRepeat(u64, Player, RepeatMode),
     Open(Option<i32>, Option<String>),
     Transport(u64, Player, String, Option<f64>),
+    Artwork(u64, artwork::Track),
 }
 
 enum JobResult {
+    Artwork(u64, Option<Vec<u8>>),
     Lyrics(u64, Reading<Lyrics>),
     PlayerState(u64, Result<automation::PlayerState, ScriptError>),
     Queue(u64, Reading<Vec<QueueItem>>, Option<ScriptError>),
@@ -175,6 +178,7 @@ fn run_job(job: Job, out: &Sender<JobResult>) {
             }
             JobResult::PlayerState(g, automation::read_state(p))
         }
+        Job::Artwork(g, t) => JobResult::Artwork(g, artwork::lookup(&t, &artwork::cache_dir())),
         Job::Transport(g, p, cmd, pos) => {
             if let Err(e) = automation::transport(p, &cmd, pos) {
                 log::info!("music: AppleScript {cmd} failed: {e}");
@@ -225,6 +229,11 @@ struct Engine {
     artwork_cache: ArtworkCache,
     /// Last transport command sent (for the AppleScript fallback).
     last_transport: Option<(String, Option<f64>)>,
+    /// B8: when to check whether the current track needs an online cover
+    /// (the player's own cover usually arrives just after the metadata).
+    art_check_at: Option<Instant>,
+    /// Online cover found for the current track generation.
+    found_art: Option<(u64, Arc<Vec<u8>>)>,
     jobs: Option<Sender<Job>>,
     results: Receiver<JobResult>,
     results_tx: Sender<JobResult>,
@@ -252,6 +261,8 @@ impl Engine {
             last_line: None,
             artwork_cache: None,
             last_transport: None,
+            art_check_at: None,
+            found_art: None,
             jobs: None,
             results,
             results_tx,
@@ -350,6 +361,10 @@ impl Engine {
     }
 
     fn on_tick(&mut self) {
+        if self.art_check_at.is_some_and(|t| Instant::now() >= t) {
+            self.art_check_at = None;
+            self.maybe_lookup_artwork();
+        }
         if let Some(since) = self.empty_since
             && since.elapsed() >= EMPTY_GRACE
         {
@@ -468,6 +483,9 @@ impl Engine {
             self.track = Some(id);
             self.on_track_changed(!first && playing);
         }
+        // After the track-change bookkeeping: a cover found for the previous
+        // track (older generation) is never applied to this one.
+        self.apply_found_art();
         self.publish();
     }
 
@@ -478,9 +496,54 @@ impl Engine {
             .and_then(Player::from_bundle)
     }
 
+    fn maybe_lookup_artwork(&mut self) {
+        let Some(np) = self.state.now_playing.as_ref() else {
+            return;
+        };
+        if !self.settings.browser_artwork
+            || !artwork::needs_cover(np.artwork.as_deref().map(|v| v.as_slice()))
+        {
+            return;
+        }
+        let t = artwork::Track {
+            bundle: np
+                .player
+                .as_ref()
+                .map(|p| p.bundle_id.clone())
+                .unwrap_or_default(),
+            title: np.title.clone(),
+            artist: np.artist.clone(),
+        };
+        let g = self.generation;
+        self.submit(Job::Artwork(g, t));
+    }
+
+    /// Keeps an online cover on the track it was found for, unless the
+    /// player meanwhile published a sharp one.
+    fn apply_found_art(&mut self) {
+        let Some((g, bytes)) = self.found_art.clone() else {
+            return;
+        };
+        if g != self.generation {
+            self.found_art = None;
+            return;
+        }
+        if let Some(np) = self.state.now_playing.as_mut()
+            && artwork::needs_cover(np.artwork.as_deref().map(|v| v.as_slice()))
+        {
+            np.artwork_id = crate::util::fnv1a(&bytes);
+            np.artwork = Some(bytes);
+        }
+    }
+
     fn on_track_changed(&mut self, alert: bool) {
         self.generation += 1;
         let g = self.generation;
+        self.found_art = None;
+        self.art_check_at = self
+            .settings
+            .browser_artwork
+            .then(|| Instant::now() + Duration::from_secs(2));
         let Some(np) = self.state.now_playing.clone() else {
             return;
         };
@@ -556,6 +619,10 @@ impl Engine {
     fn on_result(&mut self, r: JobResult) {
         match r {
             JobResult::Lyrics(g, l) if g == self.generation => self.state.lyrics = l,
+            JobResult::Artwork(g, Some(bytes)) if g == self.generation => {
+                self.found_art = Some((g, Arc::new(bytes)));
+                self.apply_found_art();
+            }
             JobResult::Permission(g, p) if g == self.generation => {
                 self.state.automation = p;
                 match p {
@@ -643,7 +710,10 @@ impl Engine {
                     self.submit(Job::Permission(g, p.bundle_id().into(), true));
                 }
             }
-            MusicCommand::ClearLyricsCache => lyrics::clear_cache(&lyrics::cache_dir()),
+            MusicCommand::ClearLyricsCache => {
+                lyrics::clear_cache(&lyrics::cache_dir());
+                artwork::clear_cache(&artwork::cache_dir());
+            }
             // Live levels (nox-audio, B7) are wired by Agent Intégrations.
             MusicCommand::Visible(_) => {}
             MusicCommand::OpenPlayer => {
@@ -664,11 +734,19 @@ impl Engine {
         if self.settings.lyrics && !s.lyrics {
             lyrics::clear_cache(&lyrics::cache_dir());
         }
+        if self.settings.browser_artwork && !s.browser_artwork {
+            artwork::clear_cache(&artwork::cache_dir());
+            self.found_art = None;
+        }
+        let artwork_enabled = !self.settings.browser_artwork && s.browser_artwork;
         let refetch = s.lyrics != self.settings.lyrics
             || s.lyrics_online != self.settings.lyrics_online
             || s.queue != self.settings.queue
             || s.include_other_players != self.settings.include_other_players;
         self.settings = s;
+        if artwork_enabled {
+            self.art_check_at = Some(Instant::now());
+        }
         if selection_changed {
             self.send_config();
         }
@@ -837,6 +915,52 @@ mod tests {
         // Unknown id without bytes: nothing invented.
         b.artwork_id = Some(10);
         assert!(to_now_playing(&b, Some(&nb), &mut cache).artwork.is_none());
+    }
+
+    #[test]
+    fn online_cover_only_for_its_track() {
+        let hub = Hub::new();
+        hub.update(|s| s.music = Some(Default::default()));
+        let mut e = Engine::new(
+            hub,
+            MusicSettings {
+                lyrics: false,
+                queue: false,
+                browser_artwork: true,
+                ..Default::default()
+            },
+        );
+        let mut l = line("A");
+        l.artwork = None;
+        l.artwork_id = None;
+        e.on_state(l.clone());
+        assert!(
+            e.art_check_at.is_some(),
+            "lookup scheduled after a track change"
+        );
+        let g = e.generation;
+        e.on_result(JobResult::Artwork(g, Some(b"cover-A".to_vec())));
+        assert_eq!(
+            e.state
+                .now_playing
+                .as_ref()
+                .unwrap()
+                .artwork
+                .as_deref()
+                .map(|v| v.as_slice()),
+            Some(&b"cover-A"[..])
+        );
+        // Metadata re-sent for A: the found cover stays.
+        e.on_state(l.clone());
+        assert!(e.state.now_playing.as_ref().unwrap().artwork.is_some());
+        // Track B: A's cover must not appear, and a late result for A is dropped.
+        let mut b = line("B");
+        b.artwork = None;
+        b.artwork_id = None;
+        e.on_state(b);
+        assert!(e.state.now_playing.as_ref().unwrap().artwork.is_none());
+        e.on_result(JobResult::Artwork(g, Some(b"cover-A".to_vec())));
+        assert!(e.state.now_playing.as_ref().unwrap().artwork.is_none());
     }
 
     #[test]
