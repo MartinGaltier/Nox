@@ -325,15 +325,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nox-helper"
-version = "0.1.0"
-dependencies = [
- "libc",
- "serde",
- "serde_json",
-]
-
-[[package]]
 name = "nox-integrations"
 version = "0.1.0"
 dependencies = [
@@ -385,9 +376,9 @@ name = "nox-power"
 version = "0.1.0"
 dependencies = [
  "crossbeam-channel",
+ "libc",
  "log",
  "nox-core",
- "nox-helper",
  "serde",
  "serde_json",
 ]

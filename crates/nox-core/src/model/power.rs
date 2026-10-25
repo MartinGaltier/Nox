@@ -3,8 +3,9 @@
 //!
 //! IOPM assertions (`System`, `SystemAndDisplay`) only prevent *idle* sleep.
 //! They do not keep a MacBook awake when its lid closes without an external
-//! display: that needs `pmset disablesleep 1`, which only root can set, hence
-//! the privileged helper used by `ClosedLid` (see docs/SLEEP_RECOVERY.md).
+//! display: that needs `pmset disablesleep 1`, which only root can set. `ClosedLid`
+//! runs it through a narrow sudoers rule installed once with the user's
+//! consent (see docs/SLEEP_RECOVERY.md).
 
 use super::Timestamp;
 use crate::reading::Reading;
@@ -16,7 +17,7 @@ pub enum KeepAwakeMode {
     System,
     /// + PreventUserIdleDisplaySleep: Mac and display stay awake.
     SystemAndDisplay,
-    /// System assertion + privileged helper sets lid-close sleep disabled.
+    /// System assertion + `pmset disablesleep 1` through the sudoers rule.
     ClosedLid,
 }
 
@@ -38,7 +39,7 @@ impl KeepAwakeMode {
             Self::ClosedLid => "laptopcomputer",
         }
     }
-    /// Whether this mode needs the privileged helper.
+    /// Whether this mode needs the sudoers rule (`pmset disablesleep`).
     pub fn needs_helper(self) -> bool {
         matches!(self, Self::ClosedLid)
     }
@@ -75,27 +76,20 @@ impl KeepAwakeDuration {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-pub enum HelperStatus {
+/// The sudoers rule that lets Nox run `sudo -n pmset -a disablesleep 1|0`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub enum LidRuleStatus {
+    #[default]
     NotInstalled,
+    /// `sudo -n` accepts the exact pmset commands for this user.
     Installed,
-    /// Installed but a different version than this app expects.
-    Outdated,
-    /// Installed (files present) but the socket does not answer.
-    Unreachable,
-    /// The helper answers but refuses this client (app moved since the helper
-    /// was installed, or another user's session). Reinstall from this app.
-    ClientRejected,
 }
 
-impl HelperStatus {
+impl LidRuleStatus {
     pub fn label_fr(self) -> &'static str {
         match self {
-            Self::NotInstalled => "Assistant non installé",
-            Self::Installed => "Assistant installé",
-            Self::Outdated => "Assistant à mettre à jour",
-            Self::Unreachable => "Assistant injoignable",
-            Self::ClientRejected => "Assistant installé pour une autre copie de Nox",
+            Self::NotInstalled => "Autorisation non installée",
+            Self::Installed => "Autorisation installée",
         }
     }
     /// Whether the closed-lid mode can be started right now.
@@ -112,9 +106,10 @@ pub enum StopReason {
     OnBattery,
     /// On battery at or below `stop_below_percent`.
     BatteryThreshold,
-    /// The helper restored lid sleep because of heavy thermal pressure.
+    /// Lid sleep was restored by the guard because of heavy thermal pressure.
     Thermal,
-    /// The helper became unreachable or revoked the closed-lid lease.
+    /// The closed-lid state was restored behind the session's back (guard
+    /// restored after Nox stopped answering, or the user changed the setting).
     HelperLost,
     Error,
     AppQuit,
@@ -156,14 +151,18 @@ impl KeepAwakeSession {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct PowerState {
     pub active: Option<KeepAwakeSession>,
-    pub helper: HelperStatus,
-    /// An install/uninstall of the helper is in progress (admin prompt shown).
-    pub helper_busy: bool,
+    pub lid_rule: LidRuleStatus,
+    /// An install/uninstall of the sudoers rule is in progress (admin prompt shown).
+    pub rule_busy: bool,
+    /// The previous privileged helper (`io.github.martingaltier.nox.helper`) is
+    /// still installed; it is removed together with the rule.
+    pub legacy_helper: bool,
     /// Lid-close sleep currently disabled system-wide (`SleepDisabled`, read
     /// from the IOPMrootDomain registry entry — no privileges needed). It can
-    /// be set by Nox's helper or by the user (`sudo pmset disablesleep 1`).
+    /// be set by Nox or by the user (`sudo pmset disablesleep 1`).
     pub lid_sleep_disabled: Reading<bool>,
     pub last_stop: Option<StopReason>,
     pub last_error: Option<String>,
@@ -175,8 +174,9 @@ impl Default for PowerState {
     fn default() -> Self {
         Self {
             active: None,
-            helper: HelperStatus::NotInstalled,
-            helper_busy: false,
+            lid_rule: LidRuleStatus::NotInstalled,
+            rule_busy: false,
+            legacy_helper: false,
             lid_sleep_disabled: Reading::pending(),
             last_stop: None,
             last_error: None,
@@ -199,7 +199,7 @@ pub enum PowerCommand {
     /// Explicit user action only: shows the macOS administrator prompt once.
     InstallHelper,
     UninstallHelper,
-    /// Re-reads helper status and `SleepDisabled`.
+    /// Re-reads the rule status and `SleepDisabled`.
     Refresh,
 }
 

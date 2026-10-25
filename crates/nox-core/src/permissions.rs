@@ -15,7 +15,7 @@ pub enum Permission {
     Notifications,
     /// System audio recording (Core Audio process taps: live levels, mixer).
     SystemAudio,
-    /// Administrator approval to install the closed-lid helper (one time).
+    /// Administrator approval to install the closed-lid sudoers rule (one time).
     AdminHelperInstall,
 }
 

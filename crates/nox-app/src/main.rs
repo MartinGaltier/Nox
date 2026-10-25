@@ -7,6 +7,27 @@ use std::sync::{Arc, Mutex};
 mod logging;
 
 fn main() {
+    // Closed-lid helpers started by Nox itself, never by a user (see
+    // docs/SLEEP_RECOVERY.md): the guard that outlives a crashed Nox, and the
+    // LaunchAgent that restores lid sleep after a reboot.
+    let args: Vec<String> = std::env::args().collect();
+    match args.get(1).map(String::as_str) {
+        Some("--lid-guard") => {
+            logging::init();
+            let owner = args
+                .get(2)
+                .and_then(|p| p.parse::<i32>().ok())
+                .filter(|p| *p > 0);
+            std::process::exit(owner.map_or(64, nox_power::run_lid_guard));
+        }
+        Some("--lid-restore") => {
+            logging::init();
+            nox_power::run_lid_restore();
+            return;
+        }
+        _ => {}
+    }
+
     logging::init();
     log::info!(
         "Nox {} starting (pid {})",

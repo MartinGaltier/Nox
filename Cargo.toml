@@ -4,7 +4,6 @@ members = [
     "crates/nox-core",
     "crates/nox-metrics",
     "crates/nox-power",
-    "crates/nox-helper",
     "crates/nox-integrations",
     "crates/nox-activities",
     "crates/nox-ui",
@@ -12,7 +11,7 @@ members = [
     "crates/nox-nowplaying",
     "crates/nox-audio",
 ]
-default-members = ["crates/nox-app", "crates/nox-helper"]
+default-members = ["crates/nox-app"]
 
 [workspace.package]
 version = "0.1.0"
