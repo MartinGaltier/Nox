@@ -130,3 +130,11 @@ fn mixer_lists_apps_without_tapping() {
     m.stop();
     assert!(hub.read(|s| s.mixer.is_none()));
 }
+
+#[test]
+fn spike_guardrails_and_error_path() {
+    // Refused before touching anything: too long.
+    assert!(nox_audio::diag::aggregate_without_tap(Duration::from_secs(600)).is_err());
+    // IOProc on a non-existent device: clean error, nothing created.
+    nox_audio::diag::ioproc_on_missing_device().unwrap();
+}

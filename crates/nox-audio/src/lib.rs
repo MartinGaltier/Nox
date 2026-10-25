@@ -112,7 +112,21 @@ pub mod diag {
     /// machinery and measures its cost. Refuses (Err) when the default
     /// output has input channels, so no microphone access is ever started.
     /// Returns (IO cycles' frames seen, process CPU time used).
+    ///
+    /// Guardrails: private aggregate only (never the default device, its
+    /// volume, format or buffer size); at most [`SPIKE_MAX`]; refused while
+    /// any process captures audio (a call may be running); every object is
+    /// RAII-owned, so an error at any step destroys what was created.
     pub fn aggregate_without_tap(dur: Duration) -> Result<(usize, Duration), String> {
+        if dur > SPIKE_MAX {
+            return Err(format!("duration above {SPIKE_MAX:?}: refusing"));
+        }
+        if hal::process_objects()
+            .into_iter()
+            .any(hal::process_running_input)
+        {
+            return Err("a process is capturing audio (call/recording?): refusing".into());
+        }
         let host = hal::default_output_device().ok_or("no default output")?;
         if hal::channel_count(host, hal::SCOPE_INPUT) > 0 {
             return Err("default output has inputs: refusing (would open the microphone)".into());
@@ -141,6 +155,29 @@ pub mod diag {
         drop(client);
         drop(agg);
         Ok((cycles, used))
+    }
+
+    /// Longest no-tap spike allowed.
+    pub const SPIKE_MAX: Duration = Duration::from_secs(30);
+
+    /// Error path of the IOProc wrapper on a device id that does not exist:
+    /// must fail cleanly, creating and leaking nothing. Returns the status.
+    pub fn ioproc_on_missing_device() -> Result<(), String> {
+        let client = Box::new(crate::meter::IoClient {
+            ring: Arc::new(Ring::new(1024)),
+            tap_channels: 2,
+        });
+        let ptr = (&*client as *const crate::meter::IoClient)
+            .cast_mut()
+            .cast::<std::ffi::c_void>();
+        // SAFETY: `client` outlives the call; no IOProc is expected to exist.
+        match unsafe { hal::IoProc::start(0x7FFF_FFF0, crate::meter::spike_io, ptr) } {
+            Ok(_) => Err("IOProc started on a missing device".into()),
+            Err(s) => {
+                log::debug!("expected failure: {s}");
+                Ok(())
+            }
+        }
     }
 
     /// Process CPU time (user + system).
