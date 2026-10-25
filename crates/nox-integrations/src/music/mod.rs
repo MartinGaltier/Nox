@@ -22,7 +22,7 @@ use crate::sys::applescript::ScriptError;
 use crate::sys::{applescript, workspace};
 use adapter::{Adapter, Event, Line, StateLine};
 use automation::Player;
-use crossbeam_channel::{Receiver, Sender, select, unbounded};
+use crossbeam_channel::{Receiver, Sender, after, never, select, unbounded};
 use nox_core::model::music::{
     Lyrics, MusicCommand, MusicSettings, MusicState, NowPlaying, PlayerInfo, QueueItem, RepeatMode,
 };
@@ -343,13 +343,10 @@ impl Engine {
         if self.jobs.is_none() {
             let (tx, rx) = unbounded::<Job>();
             let out = self.results_tx.clone();
-            self.side = Some(Worker::spawn("music-side", move |token: CancelToken| {
-                while !token.is_cancelled() {
-                    match rx.recv_timeout(Duration::from_millis(250)) {
-                        Ok(job) => run_job(job, &out),
-                        Err(crossbeam_channel::RecvTimeoutError::Timeout) => {}
-                        Err(_) => break,
-                    }
+            // Ends when `stop` drops the sender (no polling while idle).
+            self.side = Some(Worker::spawn("music-side", move |_token: CancelToken| {
+                while let Ok(job) = rx.recv() {
+                    run_job(job, &out);
                 }
             }));
             self.jobs = Some(tx);
@@ -359,10 +356,28 @@ impl Engine {
         }
     }
 
+    /// When `on_tick` next has work: deferred artwork check, empty-state grace,
+    /// adapter relaunch, or the restart counter reset.
+    fn next_tick(&self) -> Option<Instant> {
+        let reset = (self.restarts > 0)
+            .then_some(self.launched_at)
+            .flatten()
+            .map(|t| t + HEALTHY_RESET);
+        let empty = self.empty_since.map(|t| t + EMPTY_GRACE);
+        [self.art_check_at, self.relaunch_at, empty, reset]
+            .into_iter()
+            .flatten()
+            .min()
+    }
+
     fn run(mut self, rx: Receiver<Msg>, token: CancelToken) {
         self.launch();
-        let tick = Duration::from_millis(250);
         while !token.is_cancelled() {
+            // Wake for events or the next pending tick only; no fixed polling.
+            let timer = match self.next_tick() {
+                Some(t) => after(t.saturating_duration_since(Instant::now())),
+                None => never(),
+            };
             select! {
                 recv(self.events_rx) -> ev => if let Ok(ev) = ev { self.on_event(ev) },
                 recv(rx) -> msg => match msg {
@@ -372,7 +387,7 @@ impl Engine {
                 },
                 recv(self.results) -> r => if let Ok(r) = r { self.on_result(r) },
                 recv(self.meter_rx) -> ev => if let Ok((id, ev)) = ev { self.on_level(id, ev) },
-                default(tick) => {},
+                recv(timer) -> _ => {},
             }
             self.on_tick();
             self.sync_levels();
