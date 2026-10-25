@@ -176,6 +176,12 @@ pub enum Action {
         w: f64,
         control: LevelControl,
     },
+    /// Click on a per-app volume slider (0–200 %): value = (click.x - x) / w * 2.
+    SetAppVolume {
+        app: String,
+        x: f64,
+        w: f64,
+    },
     /// Follow this player (bundle id) when several publish a track.
     PreferPlayer(String),
     /// Irreversible action: ask for confirmation first.

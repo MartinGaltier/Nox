@@ -5,6 +5,7 @@ pub mod agents;
 pub mod compact;
 pub mod extra;
 pub mod lists;
+pub mod mixer;
 pub mod monitor;
 pub mod music;
 pub mod schedule;
@@ -391,15 +392,7 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, section: Section) {
         Section::Captures => extra::captures(s, cx, r, enabled),
         Section::Scratchpad => extra::scratchpad(s, cx, r, enabled),
         Section::Clipboard => extra::clipboard(s, cx, r, enabled),
-        // Rendered by Agent Interface once nox-audio publishes MixerState.
-        Section::Mixer if !enabled => module_missing(s, r, section, enabled),
-        Section::Mixer => empty(
-            s,
-            r,
-            section.symbol(),
-            section.label_fr(),
-            "En attente : affichage du mixeur pas encore disponible dans cette version.",
-        ),
+        Section::Mixer => mixer::page(s, cx, r, enabled),
     }
 }
 

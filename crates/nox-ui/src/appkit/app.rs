@@ -93,6 +93,7 @@ struct Inner {
     seek_drag: Option<(f64, f64, f64)>,
     page_shown: Option<Section>,
     music_visible: bool,
+    mixer_visible: bool,
     /// Region selection asked; the overlay opens once watch reports Selecting.
     pending_selection: Option<nox_core::model::watch::WatchTrigger>,
     /// Damage of the last relayout, consumed when invalidating the view.
@@ -183,6 +184,7 @@ impl App {
                 seek_drag: None,
                 page_shown: None,
                 music_visible: false,
+                mixer_visible: false,
                 pending_selection: None,
                 damage: None,
                 dragging_files: false,
@@ -486,6 +488,19 @@ impl App {
             use nox_core::model::music::MusicCommand;
             self.hub
                 .send(Command::Music(MusicCommand::Visible(music_now)));
+        }
+        // Mixer page visibility (taps only exist for apps set below 100 %).
+        let mixer_now = shown == Some(Section::Mixer);
+        let mixer_changed = {
+            let mut i = self.inner.borrow_mut();
+            let c = i.mixer_visible != mixer_now;
+            i.mixer_visible = mixer_now;
+            c
+        };
+        if mixer_changed {
+            use nox_core::model::mixer::MixerCommand;
+            self.hub
+                .send(Command::Mixer(MixerCommand::Visible(mixer_now)));
         }
         match appeared {
             Some(Section::Shortcuts) => {
@@ -841,6 +856,17 @@ impl App {
                 let paths = files::pick_files(self.mtm);
                 if !paths.is_empty() {
                     self.hub.send(Command::Files(FileCommand::Add(paths)));
+                }
+            }
+            Action::SetAppVolume { app, x, w } => {
+                if let Some(p) = click {
+                    let off = self.inner.borrow().offset;
+                    let f = ((p.x - off - x) / w.max(1.0)).clamp(0.0, 1.0);
+                    // 0–200 % in steps of 1 %.
+                    let volume = (f * 200.0).round() as f32 / 100.0;
+                    use nox_core::model::mixer::MixerCommand;
+                    self.hub
+                        .send(Command::Mixer(MixerCommand::SetVolume { app, volume }));
                 }
             }
             Action::SetLevel { x, w, control } => {

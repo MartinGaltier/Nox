@@ -522,6 +522,7 @@ fn sections(
         );
         f.push(row);
     }
+    f.note("Mixeur : l’activer demande à macOS l’autorisation d’enregistrement audio du système. Le son n’est ni enregistré ni envoyé, et une app laissée à 100 % n’est jamais interceptée.");
     f.header("Modules sans section");
     f.checkbox(
         module_label(ModuleId::Companion),
