@@ -297,6 +297,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "nox-audio"
+version = "0.1.0"
+dependencies = [
+ "libc",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-core-audio",
+ "objc2-core-audio-types",
+ "objc2-core-foundation",
+ "objc2-foundation",
+]
+
+[[package]]
 name = "nox-core"
 version = "0.1.0"
 dependencies = [
@@ -476,6 +490,7 @@ dependencies = [
  "objc2",
  "objc2-core-audio-types",
  "objc2-core-foundation",
+ "objc2-foundation",
 ]
 
 [[package]]

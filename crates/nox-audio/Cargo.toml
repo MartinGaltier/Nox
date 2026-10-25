@@ -1,0 +1,20 @@
+[package]
+name = "nox-audio"
+description = "Opt-in Core Audio process taps: live music levels (B7) and per-app volume (E9)."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+log.workspace = true
+libc.workspace = true
+objc2.workspace = true
+objc2-foundation = { workspace = true, features = ["NSArray", "NSDictionary", "NSString", "NSUUID", "NSValue"] }
+objc2-core-foundation = { workspace = true, features = ["CFDictionary", "CFString"] }
+objc2-app-kit = { workspace = true, features = ["NSRunningApplication"] }
+objc2-core-audio = { version = "0.3", default-features = false, features = ["std", "AudioHardware", "objc2", "objc2-core-audio-types", "objc2-foundation"] }
+objc2-core-audio-types = { version = "0.3", default-features = false, features = ["std", "CoreAudioBaseTypes", "objc2"] }
+
+[lints]
+workspace = true
