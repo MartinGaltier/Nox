@@ -23,7 +23,7 @@ pub mod settings;
 pub use alert::{Alert, AlertKind, AlertPriority};
 pub use cancel::{CancelToken, Worker};
 pub use command::Command;
-pub use hub::{Hub, IslandState};
+pub use hub::{Hub, IslandState, Subscription};
 pub use module::{Module, ModuleContext, ModuleError, ModuleId};
 pub use reading::{Reading, Unavailable};
 pub use settings::{Section, Settings, SettingsStore};

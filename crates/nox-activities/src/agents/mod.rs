@@ -19,7 +19,7 @@ pub mod usage;
 
 use collector::{AgentEvent, Collector};
 use live::Event;
-use nox_core::model::agents::{AgentCommand, AgentSettings};
+use nox_core::model::agents::{AgentCommand, AgentSettings, AgentsState};
 use nox_core::{
     Alert, AlertKind, AlertPriority, Command, Module, ModuleContext, ModuleError, ModuleId,
     Settings, Worker,
@@ -177,6 +177,17 @@ impl Default for AgentsModule {
     }
 }
 
+/// The state without the fields the UI does not draw (see the publish loop).
+fn shown(state: &AgentsState) -> AgentsState {
+    let mut s = state.clone();
+    for p in &mut s.providers {
+        for x in &mut p.sessions {
+            x.last_event_at = 0.0;
+        }
+    }
+    s
+}
+
 fn lock<T>(m: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
@@ -200,7 +211,7 @@ impl Module for AgentsModule {
         let hub = ctx.hub.clone();
         let sh = shared.clone();
         self.worker = Some(Worker::spawn("agents", move |token| {
-            let mut last: Option<nox_core::model::agents::AgentsState> = None;
+            let mut last: Option<AgentsState> = None;
             loop {
                 let settings = lock(&sh.settings).clone();
                 let now = nox_core::model::now();
@@ -219,9 +230,12 @@ impl Module for AgentsModule {
                         hub.push_alert(a);
                     }
                 }
-                if last.as_ref() != Some(&state) {
+                // Compare what is shown: a log line moves `last_event_at`, which the
+                // UI does not draw, and must not wake it.
+                let shown = shown(&state);
+                if last.as_ref() != Some(&shown) {
                     hub.update(|s| s.agents = Some(state.clone()));
-                    last = Some(state);
+                    last = Some(shown);
                 }
                 if token.sleep(if busy { BUSY_POLL } else { IDLE_POLL }) {
                     break;
