@@ -1,10 +1,11 @@
-//! Launch-time reconciliation. The helper restores lid sleep on its own
-//! (lease, journal); this only shortens the wait and tells the user what
-//! happened when the previous run ended while a closed-lid session was held.
+//! Launch-time reconciliation (`startup_recovery`, and `nox --lid-restore`
+//! from the LaunchAgent after a reboot). If the previous run left a journal
+//! with lid sleep set by Nox, put it back now and tell the user.
 
-use crate::lid::{HelperClient, LidControl, LidError, Marker};
-use nox_core::model::power::HelperStatus;
-use nox_helper::protocol::RestoreOutcome;
+use crate::guard::{self, RestoreOutcome};
+use crate::journal::{self, Journal};
+use crate::pmset::{Pmset, SleepSwitch};
+use std::path::Path;
 use std::sync::Mutex;
 
 static NOTICE: Mutex<Option<String>> = Mutex::new(None);
@@ -15,100 +16,94 @@ pub fn take_notice() -> Option<String> {
 }
 
 pub fn startup_recovery() {
-    let marker = Marker::default_location();
-    if !marker.exists() {
+    let path = journal::default_path();
+    let Some(j) = journal::load(&path) else {
         return;
-    }
-    let mut client = HelperClient::system();
-    let note = reconcile(&mut client, &marker);
+    };
+    let note = reconcile(&j, &path, &Pmset);
     log::warn!("startup recovery: {note}");
     *NOTICE.lock().unwrap_or_else(|e| e.into_inner()) = Some(note);
 }
 
-/// A previous run held a closed-lid lease and never released it.
-pub(crate) fn reconcile(client: &mut impl LidControl, marker: &Marker) -> String {
+/// A previous run ended while Nox held the closed-lid state.
+pub(crate) fn reconcile(j: &Journal, path: &Path, sw: &dyn SleepSwitch) -> String {
     let unexpected = "Nox s’est arrêté pendant le mode capot fermé : ";
-    match client.status() {
-        HelperStatus::Installed | HelperStatus::Outdated => match client.release() {
-            Ok(RestoreOutcome::Restored) => {
-                marker.clear();
-                format!("{unexpected}veille capot fermé rétablie.")
-            }
-            Ok(RestoreOutcome::Untouched | RestoreOutcome::Nothing) => {
-                marker.clear();
-                format!("{unexpected}l’assistant avait déjà rétabli la veille.")
-            }
-            Ok(RestoreOutcome::Failed) => format!(
-                "{unexpected}rétablissement en échec, l’assistant réessaie. \
-                 Vérifiez avec « pmset -g | grep SleepDisabled »."
-            ),
-            Err(e) => format!("{unexpected}{}", e.message_fr()),
-        },
-        HelperStatus::NotInstalled => {
-            marker.clear();
-            match client.sleep_disabled().value() {
-                Some(true) => format!(
-                    "{unexpected}l’assistant n’est plus installé et la veille capot fermé \
-                     est toujours désactivée. Rétablissez-la avec « sudo pmset -a disablesleep 0 »."
-                ),
-                _ => format!("{unexpected}la veille capot fermé est normale."),
-            }
-        }
-        HelperStatus::Unreachable | HelperStatus::ClientRejected => format!(
-            "{unexpected}{} L’assistant rétablit la veille de lui-même après {} s.",
-            LidError::Unreachable("pas de réponse".into()).message_fr(),
-            crate::lid::LEASE_SECS
-        ),
+    stop_leftover_guard(j);
+    if !j.active {
+        journal::clear(path);
+        return format!("{unexpected}la veille capot fermé était déjà rétablie.");
     }
+    match guard::restore(j, sw) {
+        Ok(RestoreOutcome::Restored) => {
+            journal::clear(path);
+            format!("{unexpected}veille capot fermé rétablie.")
+        }
+        Ok(RestoreOutcome::Untouched) => {
+            journal::clear(path);
+            format!(
+                "{unexpected}la veille avait déjà été modifiée hors de Nox, laissée telle quelle."
+            )
+        }
+        Err(e) => {
+            // Kept: the next launch, or the LaunchAgent, tries again.
+            format!(
+                "{unexpected}rétablissement impossible ({e}), nouvel essai au prochain lancement."
+            )
+        }
+    }
+}
+
+fn stop_leftover_guard(j: &Journal) {
+    let own = std::env::current_exe().ok();
+    guard::stop_pid(j.guard_pid, own.as_deref());
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nox_helper::backend::FakeBackend;
-    use nox_helper::core::HelperCore;
-    use nox_helper::journal::JournalStore;
-    use nox_helper::peer::SameUserPolicy;
-    use nox_helper::server::{Server, stop_pair};
-    use std::path::PathBuf;
+    use crate::pmset::fake::FakeSwitch;
+
+    fn tmp(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("nox-recovery-{}-{name}", std::process::id()));
+        let _ = std::fs::create_dir_all(&dir);
+        dir.join("lid-state.json")
+    }
 
     #[test]
-    fn relaunch_releases_the_orphaned_lease_at_once() {
-        let dir = PathBuf::from(format!("/tmp/nxr-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let sock = dir.join("h.sock");
-        let fake = FakeBackend::new();
-        let (stop, rx) = stop_pair().unwrap();
-        let mut server = Server::bind(
-            &sock,
-            SameUserPolicy {
-                allowed_client: None,
-            },
-        )
-        .unwrap();
-        let mut core = HelperCore::new(fake.clone(), JournalStore::new(dir.join("j.json")));
-        let t = std::thread::spawn(move || {
-            server.run(&mut core, &rx).unwrap();
-        });
-
-        let marker = Marker::new(dir.join("marker.json"));
-        // Previous run: acquires (default 60 s lease) then dies.
-        {
-            let mut old = HelperClient::with_socket(sock.clone(), Some(marker.clone()));
-            old.acquire(20).unwrap();
-        }
-        assert!(marker.exists());
-        assert_eq!(fake.with(|s| s.sleep_disabled), Some(true));
-
-        let mut fresh = HelperClient::with_socket(sock.clone(), Some(marker.clone()));
-        let note = reconcile(&mut fresh, &marker);
+    fn leftover_active_journal_is_restored_at_once() {
+        let path = tmp("active");
+        let sw = FakeSwitch::new(true);
+        let j = Journal::starting(999_999, 0.0, false, 20);
+        journal::store(&path, &j).unwrap();
+        let note = reconcile(&j, &path, &sw);
         assert!(note.contains("rétablie"), "{note}");
-        assert_eq!(fake.with(|s| s.sleep_disabled), Some(false), "no 60 s wait");
-        assert!(!marker.exists());
+        assert!(!sw.with(|s| s.value));
+        assert_eq!(journal::load(&path), None);
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
 
-        stop.stop();
-        t.join().unwrap();
-        let _ = std::fs::remove_dir_all(&dir);
+    #[test]
+    fn users_own_setting_is_respected() {
+        let path = tmp("user");
+        let sw = FakeSwitch::new(false);
+        sw.with(|s| s.value = false);
+        let j = Journal::starting(1, 0.0, false, 20);
+        let note = reconcile(&j, &path, &sw);
+        assert!(note.contains("laissée"), "{note}");
+        assert!(sw.with(|s| s.writes.is_empty()));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn failed_restore_keeps_the_journal_for_the_next_launch() {
+        let path = tmp("fail");
+        let sw = FakeSwitch::new(true);
+        sw.with(|s| s.refuse = true);
+        let j = Journal::starting(1, 0.0, false, 20);
+        journal::store(&path, &j).unwrap();
+        let note = reconcile(&j, &path, &sw);
+        assert!(note.contains("nouvel essai"), "{note}");
+        assert!(journal::load(&path).is_some());
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 }

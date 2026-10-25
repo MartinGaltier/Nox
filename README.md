@@ -30,7 +30,6 @@ du dernier commit). Contenu du bundle :
 | Chemin | Rôle |
 |---|---|
 | `Contents/MacOS/nox` | l'application |
-| `Contents/Library/LaunchServices/nox-helper` | helper root optionnel (capot fermé) |
 | `Contents/Resources/libnox_nowplaying.dylib` + `now-playing.pl` | passerelle Now Playing (voir plus bas) |
 
 **Signature** : aucune identité Developer ID n'est disponible sur la machine de
@@ -63,7 +62,7 @@ Les modules qui en exigent une intrusive sont **désactivés par défaut**.
 | Commandes lecture aléatoire / file (Musique, Spotify), vider la corbeille | Automatisation (Apple Events) vers l'app concernée | à la première action |
 | Accessoires Bluetooth | Bluetooth | activé |
 | Suivi des téléchargements | Dossier Téléchargements | activé |
-| Maintien éveillé capot fermé | mot de passe administrateur **une seule fois** pour installer le helper | jamais sans clic explicite |
+| Maintien éveillé capot fermé | mot de passe administrateur **une seule fois** pour autoriser une règle sudo limitée à `pmset disablesleep` | jamais sans clic explicite |
 | Niveaux audio réels du visualiseur, mixeur par app | Enregistrement audio du système (Core Audio, au premier usage) | **désactivés** |
 | Historique du presse-papiers | « Coller depuis d'autres apps » (alerte macOS 15.4+) | **désactivé** |
 | Captures récentes | dossier Bureau | **désactivé** |
@@ -89,10 +88,10 @@ permanente.
 - **Maintien éveillé** (îlot ou barre des menus) :
   1. *Mac actif* (l'écran peut s'éteindre) ;
   2. *Mac et écran actifs* ;
-  3. *Mac actif capot fermé*, même sans écran externe (nécessite le helper).
+  3. *Mac actif capot fermé*, même sans écran externe (nécessite l’autorisation sudo, § Récupération).
 
   Durées 15 min, 30 min, 1 h, 2 h ou illimitée ; option « uniquement sur secteur » ; arrêt
-  sous un seuil de batterie (le helper impose de toute façon un plancher de 5 %).
+  sous un seuil de batterie (le mode capot fermé impose de toute façon un plancher de 5 %).
 - **Agents IA** : Claude Code, Codex, OpenCode et GitHub Copilot sont lus depuis leurs
   journaux locaux (rien n'est copié ni envoyé). Les tokens sont mesurés et le coût est une
   estimation (table de prix datée).
@@ -112,21 +111,22 @@ permanente.
 
 ## Récupération des réglages de veille
 
-Si le Mac ne se met plus en veille capot fermé après un crash ou un arrêt forcé, le helper
-restaure normalement l'état tout seul (fin de bail, redémarrage). Manuellement :
+Si le Mac ne se met plus en veille capot fermé après un crash ou un arrêt forcé, Nox
+restaure l'état au lancement suivant, et un agent de session le fait à l'ouverture de session.
+Manuellement :
 
 ```sh
 pmset -g | grep SleepDisabled          # aucune ligne ou 0 = veille normale
 sudo pmset -a disablesleep 0           # rétablir la veille capot fermé
-sudo scripts/uninstall-helper.sh       # retirer le helper (restaure d'abord si besoin)
+sudo scripts/install-lid-rule.sh remove  # retirer la règle sudo et l'ancien helper
 ```
 
 Procédure complète, modèle de menace et tests physiques à faire : **`docs/SLEEP_RECOVERY.md`**.
 
 ## Désinstaller
 
-1. Barre des menus → Réglages → Maintien éveillé → *Désinstaller l'assistant* (ou
-   `sudo scripts/uninstall-helper.sh`) si vous l'aviez installé.
+1. Réglages → Maintien éveillé → *Retirer l'autorisation capot fermé* (ou
+   `sudo scripts/install-lid-rule.sh remove`) si vous l'aviez installée.
 2. Quitter Nox, puis :
 
 ```sh

@@ -7,7 +7,7 @@ use crate::format;
 use crate::geom::{Color, Rect};
 use crate::scene::{Action, Align, Scene, Weight};
 use nox_core::model::metrics::{MemoryPressure, MetricsSnapshot, Series};
-use nox_core::model::power::{HelperStatus, KeepAwakeDuration, KeepAwakeMode, PowerCommand};
+use nox_core::model::power::{KeepAwakeDuration, KeepAwakeMode, LidRuleStatus, PowerCommand};
 use nox_core::{Command, Reading, Section};
 
 struct Tile {
@@ -323,14 +323,14 @@ pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             mode_short(mode),
             secondary(11.0).weight(Weight::Medium),
         );
-        if mode.needs_helper() && !p.helper.usable() {
+        if mode.needs_helper() && !p.lid_rule.usable() {
             let (txt, btn) = pills.split_right(170.0, 6.0);
             s.text(
                 Rect::new(txt.x, txt.y + 5.0, txt.w, 14.0),
-                p.helper.label_fr(),
+                p.lid_rule.label_fr(),
                 tertiary(10.0),
             );
-            if p.helper_busy {
+            if p.rule_busy {
                 // No action while macOS shows the administrator prompt.
                 s.fill(btn, btn.h / 2.0, Color::CARD);
                 s.text(
@@ -343,7 +343,7 @@ pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
                     s,
                     cx,
                     btn,
-                    helper_button(p.helper),
+                    helper_button(p.lid_rule),
                     false,
                     Action::InstallHelper,
                 );
@@ -370,9 +370,9 @@ pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         Reading::Measured(false) | Reading::Estimated(false) => String::new(),
         Reading::Unavailable(u) => format!("veille capot : {}", format::unavailable(u)),
     };
-    let line = match (p.helper.usable(), lid.is_empty()) {
-        (true, true) => p.helper.label_fr().to_string(),
-        (true, false) => format!("{} · {lid}", p.helper.label_fr()),
+    let line = match (p.lid_rule.usable(), lid.is_empty()) {
+        (true, true) => p.lid_rule.label_fr().to_string(),
+        (true, false) => format!("{} · {lid}", p.lid_rule.label_fr()),
         (false, _) => lid,
     };
     s.text(
@@ -382,14 +382,11 @@ pub fn keep_awake(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     );
 }
 
-/// Label of the helper button for a status that is not usable yet.
-pub fn helper_button(h: HelperStatus) -> &'static str {
+/// Label of the button that installs the closed-lid permission.
+pub fn helper_button(h: LidRuleStatus) -> &'static str {
     match h {
-        HelperStatus::NotInstalled => "Installer l’assistant…",
-        HelperStatus::Outdated => "Mettre à jour l’assistant…",
-        HelperStatus::Unreachable | HelperStatus::ClientRejected | HelperStatus::Installed => {
-            "Réinstaller l’assistant…"
-        }
+        LidRuleStatus::NotInstalled => "Autoriser le capot fermé…",
+        LidRuleStatus::Installed => "Réinstaller l’autorisation…",
     }
 }
 
@@ -447,7 +444,7 @@ mod tests {
     }
 
     #[test]
-    fn keep_awake_offers_modes_durations_and_helper() {
+    fn keep_awake_offers_modes_durations_and_permission() {
         let settings = Settings::default();
         let mut st = IslandState {
             power: Some(PowerState::default()),
@@ -471,7 +468,7 @@ mod tests {
                     ..
                 }))
             )),
-            "closed lid needs the helper first"
+            "closed lid needs the permission first"
         );
         st.power = Some(PowerState {
             active: Some(KeepAwakeSession {
@@ -480,7 +477,7 @@ mod tests {
                 started_at: 0.0,
                 ends_at: Some(1_800_000_000.0 + 1800.0),
             }),
-            helper: HelperStatus::Installed,
+            lid_rule: LidRuleStatus::Installed,
             ..Default::default()
         });
         let mut s = Scene::default();

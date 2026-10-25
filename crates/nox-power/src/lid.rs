@@ -1,302 +1,237 @@
-//! Closed-lid control through the privileged helper (client side).
-//!
-//! The app holds one persistent connection while a closed-lid session runs
-//! and heartbeats on it. If the app dies, the kernel closes the socket and the
-//! helper restores lid sleep after the lease — nothing here needs to run.
+//! Closed-lid control, client side: the sudoers rule, `SleepDisabled`, the
+//! journal and the guard process. Runs as the user; no root process and no
+//! open connection. See docs/SLEEP_RECOVERY.md.
 
+use crate::guard::{self, GuardReason, RestoreOutcome};
+use crate::journal::{self, Journal};
+use crate::pmset::{Pmset, SleepSwitch, set_confirmed};
+use crate::rule;
 use nox_core::Reading;
-use nox_core::model::power::HelperStatus;
+use nox_core::model::now;
+use nox_core::model::power::LidRuleStatus;
 use nox_core::reading::Unavailable;
-use nox_helper::protocol::{ErrorCode, Request, Response, RestoreOutcome, RevokeReason};
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::process::{Child, Command, Stdio};
 
-/// Grace the helper gives us without heartbeat / after a disconnect.
-pub const LEASE_SECS: u32 = 60;
-/// Heartbeat period (a quarter of the lease).
-pub const HEARTBEAT_SECS: f64 = 15.0;
+/// How often the engine checks the journal while a closed-lid session runs.
+pub const POLL_SECS: f64 = 10.0;
+
+/// Battery parameters the guard applies (copied to the journal).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct LidPolicy {
+    pub only_on_ac: bool,
+    pub min_battery: u8,
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LidError {
+    /// The sudoers rule is not installed (or does not match).
     NotInstalled,
-    Unreachable(String),
-    Forbidden(String),
-    Revoked(RevokeReason),
-    Refused { code: ErrorCode, detail: String },
-    Protocol(String),
+    /// `sudo -n pmset` refused, or the value did not change.
+    Refused(String),
+    /// The journal could not be written.
+    Journal(String),
+    /// The guard process could not be started.
+    Guard(String),
 }
 
 impl LidError {
     pub fn message_fr(&self) -> String {
         match self {
             Self::NotInstalled => {
-                "Le mode capot fermé nécessite l’assistant : installez-le depuis Maintien éveillé."
+                "Le mode capot fermé demande une autorisation : installez-la depuis Maintien éveillé."
                     .into()
             }
-            Self::Unreachable(e) => format!("Assistant capot fermé injoignable ({e})."),
-            Self::Forbidden(_) => {
-                "L’assistant a été installé pour une autre copie de Nox : réinstallez-le.".into()
-            }
-            Self::Revoked(r) => match r {
-                RevokeReason::Battery => {
-                    "Batterie sous le seuil : veille capot fermé rétablie.".into()
-                }
-                RevokeReason::Thermal => {
-                    "Température élevée : veille capot fermé rétablie par sécurité.".into()
-                }
-                RevokeReason::External => {
-                    "Le réglage de veille a été modifié en dehors de Nox.".into()
-                }
-                _ => "L’assistant a rétabli la veille capot fermé.".into(),
-            },
-            Self::Refused { code, detail } => match code {
-                ErrorCode::Battery => format!("Refusé : batterie sous le seuil ({detail})."),
-                ErrorCode::Thermal => "Refusé : température élevée.".into(),
-                ErrorCode::Busy => "Assistant occupé par une autre session.".into(),
-                _ => format!("L’assistant a échoué : {detail}"),
-            },
-            Self::Protocol(e) => format!("Réponse inattendue de l’assistant ({e})."),
+            Self::Refused(d) => format!("Le mode capot fermé n’a pas pu être activé : {d}"),
+            Self::Journal(d) => format!("Journal de restauration non écrit : {d}"),
+            Self::Guard(d) => format!("Gardien de restauration non lancé : {d}"),
         }
     }
 }
 
 pub trait LidControl: Send {
-    /// Detected without privileges (files + a `version` round trip).
-    fn status(&mut self) -> HelperStatus;
+    /// Detected without privileges (`sudo -n -l`).
+    fn rule_status(&mut self) -> LidRuleStatus;
     /// `SleepDisabled` read directly from the IORegistry.
     fn sleep_disabled(&mut self) -> Reading<bool>;
-    /// Disables lid-close sleep for this session. `Ok(applied)`: `false` when
-    /// it was already disabled outside Nox (left untouched).
-    fn acquire(&mut self, min_battery: u8) -> Result<bool, LidError>;
-    fn heartbeat(&mut self) -> Result<(), LidError>;
+    /// Disables lid-close sleep for this session. `Ok(true)`: Nox set it.
+    /// `Ok(false)`: it was already disabled and is left as it is.
+    fn acquire(&mut self, policy: LidPolicy) -> Result<bool, LidError>;
+    /// Once the guard restored lid sleep on its own (battery, thermal, or Nox
+    /// vanished), the reason. Clears the journal.
+    fn take_guard_stop(&mut self) -> Option<GuardReason>;
     fn release(&mut self) -> Result<RestoreOutcome, LidError>;
-    /// How often the engine must heartbeat while holding the lease.
-    fn heartbeat_secs(&self) -> f64 {
-        HEARTBEAT_SECS
-    }
 }
 
-/// App-side record of a held lease, so the next launch knows a previous run
-/// ended without releasing (crash, kill -9, force quit).
-#[derive(Debug, Clone)]
-pub struct Marker {
-    path: PathBuf,
+pub struct LidClient<S: SleepSwitch> {
+    switch: S,
+    journal: PathBuf,
+    installed: Box<dyn Fn() -> bool + Send>,
+    /// Executable started as `<exe> --lid-guard <pid>`. `None`: no guard (tests).
+    guard_exe: Option<PathBuf>,
+    /// This client set `SleepDisabled` to 1 and has not released it.
+    held: bool,
+    guard: Option<Child>,
 }
 
-impl Marker {
-    pub fn new(path: PathBuf) -> Self {
-        Self { path }
-    }
-    pub fn default_location() -> Self {
+impl LidClient<Pmset> {
+    /// The real system: sudoers rule, IORegistry, the app's own executable.
+    pub fn system() -> Self {
         Self::new(
-            nox_core::paths::app_support_dir()
-                .join("power")
-                .join("closed-lid-lease.json"),
+            Pmset,
+            journal::default_path(),
+            Box::new(rule::installed),
+            std::env::current_exe().ok(),
         )
     }
-    pub fn set(&self) {
-        let body = serde_json::json!({
-            "pid": std::process::id(),
-            "since": nox_core::model::now(),
-        });
-        if let Err(e) = nox_core::paths::write_atomic(&self.path, body.to_string().as_bytes()) {
-            log::warn!("closed-lid marker not written: {e}");
-        }
-    }
-    pub fn clear(&self) {
-        let _ = std::fs::remove_file(&self.path);
-    }
-    pub fn exists(&self) -> bool {
-        self.path.exists()
-    }
 }
 
-pub struct HelperClient {
-    socket: PathBuf,
-    installed: Box<dyn Fn() -> bool + Send>,
-    conn: Option<BufReader<UnixStream>>,
-    holds_lease: bool,
-    marker: Option<Marker>,
-    lease_secs: u32,
-}
-
-const IO_TIMEOUT: Duration = Duration::from_secs(25);
-
-impl HelperClient {
-    /// The installed helper.
-    pub fn system() -> Self {
+impl<S: SleepSwitch> LidClient<S> {
+    pub fn new(
+        switch: S,
+        journal: PathBuf,
+        installed: Box<dyn Fn() -> bool + Send>,
+        guard_exe: Option<PathBuf>,
+    ) -> Self {
         Self {
-            socket: PathBuf::from(nox_helper::SOCKET_PATH),
-            installed: Box::new(crate::install::helper_files_present),
-            conn: None,
-            holds_lease: false,
-            marker: Some(Marker::default_location()),
-            lease_secs: LEASE_SECS,
+            switch,
+            journal,
+            installed,
+            guard_exe,
+            held: false,
+            guard: None,
         }
     }
 
-    /// A helper served on `socket` (tests: unprivileged server + fake backend).
-    pub fn with_socket(socket: PathBuf, marker: Option<Marker>) -> Self {
-        Self {
-            socket,
-            installed: Box::new(|| true),
-            conn: None,
-            holds_lease: false,
-            marker,
-            lease_secs: LEASE_SECS,
-        }
-    }
-
-    /// Shorter lease (tests).
-    pub fn with_lease_secs(mut self, secs: u32) -> Self {
-        self.lease_secs = secs;
-        self
-    }
-
-    fn connect(&mut self) -> Result<&mut BufReader<UnixStream>, LidError> {
-        if self.conn.is_none() {
-            if !(self.installed)() {
-                return Err(LidError::NotInstalled);
-            }
-            let s = UnixStream::connect(&self.socket)
-                .map_err(|e| LidError::Unreachable(e.to_string()))?;
-            s.set_read_timeout(Some(IO_TIMEOUT))
-                .and_then(|_| s.set_write_timeout(Some(IO_TIMEOUT)))
-                .map_err(|e| LidError::Unreachable(e.to_string()))?;
-            self.conn = Some(BufReader::new(s));
-        }
-        Ok(self.conn.as_mut().expect("just connected"))
-    }
-
-    fn request(&mut self, req: Request) -> Result<Response, LidError> {
-        let r = self.round_trip(req);
-        if matches!(r, Err(LidError::Unreachable(_))) {
-            self.conn = None;
-        }
-        let resp = r?;
-        match resp {
-            Response::Err {
-                code: ErrorCode::Forbidden,
-                detail,
-            } => {
-                self.conn = None;
-                Err(LidError::Forbidden(detail))
-            }
-            Response::Err {
-                code: ErrorCode::Revoked(r),
-                ..
-            } => Err(LidError::Revoked(r)),
-            Response::Err { code, detail } => Err(LidError::Refused { code, detail }),
-            ok => Ok(ok),
-        }
-    }
-
-    fn round_trip(&mut self, req: Request) -> Result<Response, LidError> {
-        let conn = self.connect()?;
-        conn.get_mut()
-            .write_all(format!("{}\n", req.encode()).as_bytes())
-            .map_err(|e| LidError::Unreachable(e.to_string()))?;
-        let mut line = String::new();
-        match conn.read_line(&mut line) {
-            Ok(0) => Err(LidError::Unreachable("connection closed".into())),
-            Ok(_) => Response::parse(line.trim_end()).map_err(LidError::Protocol),
-            Err(e) => Err(LidError::Unreachable(e.to_string())),
-        }
-    }
-
-    fn drop_idle_connection(&mut self) {
-        if !self.holds_lease {
-            self.conn = None;
-        }
-    }
-}
-
-impl LidControl for HelperClient {
-    fn status(&mut self) -> HelperStatus {
-        if !(self.installed)() {
-            return HelperStatus::NotInstalled;
-        }
-        let s = match self.request(Request::Version) {
-            Ok(Response::Version { protocol, version }) => {
-                if protocol == nox_helper::PROTOCOL_VERSION && version == nox_helper::VERSION {
-                    HelperStatus::Installed
-                } else {
-                    HelperStatus::Outdated
-                }
-            }
-            Err(LidError::Forbidden(_)) => HelperStatus::ClientRejected,
-            Err(LidError::NotInstalled) => HelperStatus::NotInstalled,
-            _ => HelperStatus::Unreachable,
+    fn spawn_guard(&self, owner: i32) -> Result<Option<Child>, String> {
+        let Some(exe) = &self.guard_exe else {
+            return Ok(None);
         };
-        self.drop_idle_connection();
-        s
+        Command::new(exe)
+            .arg("--lid-guard")
+            .arg(owner.to_string())
+            // Own process group: a terminal Ctrl-C or a group kill aimed at Nox
+            // does not reach the guard, which must outlive a crash.
+            .process_group(0)
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+
+    fn finish(&mut self) {
+        self.held = false;
+        if let Some(mut child) = self.guard.take() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+impl<S: SleepSwitch> LidControl for LidClient<S> {
+    fn rule_status(&mut self) -> LidRuleStatus {
+        if (self.installed)() {
+            LidRuleStatus::Installed
+        } else {
+            LidRuleStatus::NotInstalled
+        }
     }
 
     fn sleep_disabled(&mut self) -> Reading<bool> {
-        match nox_helper::sys::sleep_disabled() {
+        match self.switch.read() {
             Ok(v) => Reading::Measured(v),
             Err(e) => Reading::Unavailable(Unavailable::Error(e)),
         }
     }
 
-    fn acquire(&mut self, min_battery: u8) -> Result<bool, LidError> {
-        let r = self.request(Request::Acquire {
-            lease_secs: self.lease_secs,
-            min_battery,
-        });
-        match r {
-            Ok(Response::Acquired { applied }) => {
-                self.holds_lease = true;
-                if let Some(m) = &self.marker {
-                    m.set();
-                }
-                Ok(applied)
-            }
-            Ok(other) => {
-                self.drop_idle_connection();
-                Err(LidError::Protocol(other.encode()))
+    fn acquire(&mut self, policy: LidPolicy) -> Result<bool, LidError> {
+        if self.held {
+            // Same session goes on: only the guard parameters change.
+            let mut j = journal::load(&self.journal)
+                .filter(|j| j.active)
+                .ok_or_else(|| LidError::Journal("journal absent pendant la session".into()))?;
+            j.only_on_ac = policy.only_on_ac;
+            j.min_battery = policy.min_battery;
+            journal::store(&self.journal, &j).map_err(|e| LidError::Journal(e.to_string()))?;
+            return Ok(true);
+        }
+        if !(self.installed)() {
+            return Err(LidError::NotInstalled);
+        }
+        let initial = self.switch.read().map_err(LidError::Refused)?;
+        if initial {
+            // Set by the user (or left over): not ours, nothing to journal.
+            return Ok(false);
+        }
+
+        // Journal first, then the guard, then the change: whatever happens
+        // next, a process can find out what to put back.
+        let owner = std::process::id() as i32;
+        let mut j = Journal::starting(owner, now(), policy.only_on_ac, policy.min_battery);
+        journal::store(&self.journal, &j).map_err(|e| LidError::Journal(e.to_string()))?;
+        match self.spawn_guard(owner) {
+            Ok(child) => {
+                j.guard_pid = child.as_ref().map_or(0, |c| c.id() as i32);
+                self.guard = child;
             }
             Err(e) => {
-                self.drop_idle_connection();
-                Err(e)
+                journal::clear(&self.journal);
+                return Err(LidError::Guard(e));
             }
         }
+        if let Err(e) = journal::store(&self.journal, &j) {
+            self.finish();
+            journal::clear(&self.journal);
+            return Err(LidError::Journal(e.to_string()));
+        }
+        if let Err(e) = set_confirmed(&self.switch, true) {
+            // Not applied: whatever the value is now, put back what was there.
+            let _ = guard::restore(&j, &self.switch);
+            self.finish();
+            journal::clear(&self.journal);
+            return Err(LidError::Refused(e));
+        }
+        self.held = true;
+        Ok(true)
     }
 
-    fn heartbeat(&mut self) -> Result<(), LidError> {
-        if self.conn.is_none() {
-            return Err(LidError::Unreachable("not connected".into()));
+    fn take_guard_stop(&mut self) -> Option<GuardReason> {
+        if !self.held {
+            return None;
         }
-        match self.request(Request::Heartbeat)? {
-            Response::Heartbeat => Ok(()),
-            other => Err(LidError::Protocol(other.encode())),
+        let j = journal::load(&self.journal)?;
+        if j.active {
+            return None;
         }
-    }
-
-    fn heartbeat_secs(&self) -> f64 {
-        f64::from(self.lease_secs) / 4.0
+        journal::clear(&self.journal);
+        self.finish();
+        Some(j.guard_reason.unwrap_or(GuardReason::External))
     }
 
     fn release(&mut self) -> Result<RestoreOutcome, LidError> {
-        let r = match self.request(Request::Release) {
-            Ok(Response::Released(o)) => Ok(o),
-            Ok(other) => Err(LidError::Protocol(other.encode())),
-            Err(e) => Err(e),
+        let Some(j) = journal::load(&self.journal) else {
+            self.finish();
+            return Ok(RestoreOutcome::Untouched);
         };
-        // Whatever happened, our side of the lease is over: closing the
-        // connection lets the helper restore after the grace if the release
-        // itself did not get through.
-        self.holds_lease = false;
-        self.conn = None;
-        // The marker stays when the outcome is unknown or failed, so the next
-        // launch reconciles with the helper.
-        if let Some(m) = &self.marker
-            && matches!(r, Ok(o) if o != RestoreOutcome::Failed)
-        {
-            m.clear();
+        if !j.active {
+            journal::clear(&self.journal);
+            self.finish();
+            return Ok(RestoreOutcome::Untouched);
         }
-        r
+        match guard::restore(&j, &self.switch) {
+            Ok(outcome) => {
+                journal::clear(&self.journal);
+                self.finish();
+                Ok(outcome)
+            }
+            Err(e) => {
+                // The journal and the guard stay: the guard keeps retrying.
+                self.held = false;
+                Err(LidError::Refused(e))
+            }
+        }
     }
 }
