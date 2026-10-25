@@ -150,6 +150,21 @@ impl NotchGeometry {
         Rect::new(x, self.screen.max_y() - max.h, max.w, max.h)
     }
 
+    /// Hot zone under the compact island: the widest compact shape (activity
+    /// wings of `wing` on each side) plus `margin`, hanging from the top edge.
+    /// It stays inside the menu bar and does not move with the island.
+    pub fn hot_zone(&self, wing: f64, margin: f64) -> Rect {
+        let c = self.compact_size(wing);
+        self.window_frame(Size::new(c.w + 2.0 * margin, c.h + margin))
+    }
+
+    /// Whether the island window ignores mouse events at a pointer position: it
+    /// takes them only over its shape. Elsewhere they pass through to the menu bar
+    /// beside it (the hot zone under the compact island is a separate window).
+    pub fn ignores_clicks(over_shape: bool) -> bool {
+        !over_shape
+    }
+
     /// Left edge of a shape `width` wide, centred on the camera and snapped to
     /// half points (a whole pixel on 2x displays), in AppKit global space.
     pub fn shape_x(&self, width: f64) -> f64 {
@@ -208,6 +223,13 @@ fn rounded_rect(path: &mut Vec<Seg>, r: Rect, radius: f64) {
         Point::new(l + c, t),
     ));
     path.push(Seg::Close);
+}
+
+/// Whether the island window ignores mouse events at a pointer position: it
+/// takes them only over its shape. Elsewhere they pass through to the menu bar
+/// beside it (the hot zone under the compact island is a separate window).
+pub fn ignores_clicks(over_shape: bool) -> bool {
+    !over_shape
 }
 
 /// The silhouette. `floating_gap` = capsule; `compact` rounds a capsule fully.
@@ -440,5 +462,26 @@ mod tests {
         assert!(p.contains(&Seg::Line(Point::new(300.0, 0.0))));
         let c = island_path(Size::new(300.0, 24.0), Some(2.0), true);
         assert_eq!(c.last(), Some(&Seg::Close));
+    }
+    #[test]
+    fn hot_zone_covers_the_widest_compact_shape_inside_the_menu_bar() {
+        let g = NotchGeometry::new(&m2_air(), true, IslandSilhouette::Capsule);
+        let hot = g.hot_zone(64.0, 6.0);
+        // Hangs from the top edge, no taller than the menu bar strip it sits in.
+        assert_eq!(hot.max_y(), g.screen.max_y());
+        assert!(hot.h <= g.bar_height + 1.0);
+        // Every compact shape, with the widest wings, lies inside it.
+        for wing in [0.0, 40.0, 64.0] {
+            let c = g.compact_size(wing);
+            let left = g.shape_x(c.w);
+            assert!(left >= hot.x && left + c.w <= hot.max_x(), "wing {wing}");
+            assert!(c.h <= hot.h, "wing {wing}");
+        }
+    }
+
+    #[test]
+    fn island_ignores_clicks_only_outside_its_shape() {
+        assert!(ignores_clicks(false));
+        assert!(!ignores_clicks(true));
     }
 }

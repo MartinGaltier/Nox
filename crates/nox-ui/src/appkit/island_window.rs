@@ -207,6 +207,97 @@ define_class!(
     }
 );
 
+define_class!(
+    // SAFETY: NSView may be subclassed; no Drop impl; ivars are main-thread only.
+    #[unsafe(super(NSView, NSResponder, objc2::runtime::NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NoxHotZoneView"]
+    #[ivars = ViewIvars]
+    pub struct HotZoneView;
+
+    impl HotZoneView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _e: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            refresh_tracking(self, &self.ivars().tracking);
+            // SAFETY: calling the superclass implementation.
+            let _: () = unsafe { msg_send![super(self), updateTrackingAreas] };
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _e: &NSEvent) {
+            if let Some(a) = app::get() {
+                a.hot_zone_event();
+            }
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, _e: &NSEvent) {
+            if let Some(a) = app::get() {
+                a.hot_zone_event();
+            }
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _e: &NSEvent) {
+            if let Some(a) = app::get() {
+                a.hot_zone_event();
+            }
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, _e: &NSEvent) {
+            if let Some(a) = app::get() {
+                a.hot_zone_click();
+            }
+        }
+    }
+);
+
+impl HotZoneView {
+    pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ViewIvars::default());
+        // SAFETY: designated NSView initialiser.
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
+/// Replaces the view's tracking area with one covering its whole bounds.
+fn refresh_tracking(view: &NSView, slot: &RefCell<Option<Retained<NSTrackingArea>>>) {
+    let old = slot.borrow_mut().take();
+    if let Some(old) = old {
+        view.removeTrackingArea(&old);
+    }
+    let opts = NSTrackingAreaOptions::MouseEnteredAndExited
+        | NSTrackingAreaOptions::MouseMoved
+        | NSTrackingAreaOptions::ActiveAlways
+        | NSTrackingAreaOptions::InVisibleRect
+        | NSTrackingAreaOptions::EnabledDuringMouseDrag;
+    let owner: &objc2::runtime::AnyObject = view;
+    // SAFETY: owner is the view itself (kept alive by the view hierarchy while
+    // the area is installed); no userInfo.
+    let area = unsafe {
+        NSTrackingArea::initWithRect_options_owner_userInfo(
+            NSTrackingArea::alloc(),
+            NSRect::ZERO,
+            opts,
+            Some(owner),
+            None,
+        )
+    };
+    view.addTrackingArea(&area);
+    *slot.borrow_mut() = Some(area);
+}
+
 impl IslandView {
     pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars::default());

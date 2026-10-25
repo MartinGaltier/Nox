@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Opt-in hover driver for release measurements (never in shipped builds).
+hover-probe = []
+
 [dependencies]
 nox-core.workspace = true
 log.workspace = true
