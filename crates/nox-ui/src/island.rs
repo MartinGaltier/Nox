@@ -8,7 +8,7 @@ use crate::geom::{Point, Size};
 use crate::geometry::NotchGeometry;
 use crate::gesture::{GestureAction, GestureTracker, ScrollInput};
 use crate::machine::{Machine, MachineConfig, Mode};
-use crate::scene::{MusicPanel, Op, Scene};
+use crate::scene::{Group, LayeredScene, MusicPanel, Op, Scene};
 use crate::spring::IslandMotion;
 use crate::views::{self, Ctx};
 use nox_core::{Alert, IslandState, Section, Settings};
@@ -236,6 +236,114 @@ impl IslandModel {
         s
     }
 
+    /// The content as layers, each laid out for its own target size: the
+    /// page for the expanded shape, the closed surface for its strip or
+    /// notice. Nothing depends on the animated width, so a layer only changes
+    /// when its content does (see [`Group::generation`]).
+    pub fn layers(
+        &self,
+        state: &IslandState,
+        settings: &Settings,
+        now: f64,
+        hover: Option<Point>,
+    ) -> LayeredScene {
+        let g = &self.geometry;
+        let silhouette = self.size();
+        let open = self.motion.open.value.clamp(0.0, 1.0);
+
+        let closed_target = self.surface_size(&self.surface, settings);
+        let mut closed = Scene::default();
+        match &self.surface {
+            Surface::Strip(a) => {
+                views::compact::strip(&mut closed, g, closed_target, a, now, &settings.companion);
+                if open < 0.01 {
+                    let r = crate::geom::Rect::new(0.0, 0.0, closed_target.w, closed_target.h);
+                    closed.hit(
+                        r,
+                        crate::scene::Action::Open(views::compact::section_of(a)),
+                        "Ouvrir",
+                    );
+                }
+            }
+            Surface::Notice(a) => views::compact::notice(&mut closed, g, closed_target, a),
+            Surface::Rest | Surface::Expanded => {}
+        }
+
+        let page_target = g.expanded_size(&settings.island);
+        let mut page = Scene::default();
+        if open > 0.0 || self.surface == Surface::Expanded {
+            // Hover arrives in the animated shape's space; the page is laid out
+            // at its own target, so shift it by the difference of the two origins.
+            let shift = g.shape_x(silhouette.w) - g.shape_x(page_target.w);
+            let hover = hover.map(|p| Point::new(p.x + shift, p.y));
+            let section = self.current_section(settings);
+            let cx = Ctx {
+                state,
+                settings,
+                now,
+                hover,
+                scroll: section
+                    .and_then(|s| self.scroll.get(&s).copied())
+                    .unwrap_or(0.0),
+                music_panel: self.music_panel,
+                camera_attached: self.camera_attached,
+            };
+            match section {
+                Some(section) => {
+                    let visible = settings.visible_sections();
+                    let content = views::chrome(
+                        &mut page,
+                        &cx,
+                        g,
+                        page_target.w,
+                        page_target.h,
+                        &visible,
+                        section,
+                    );
+                    views::page(&mut page, &cx, content, section);
+                }
+                None => {
+                    let r = crate::geom::Rect::new(
+                        0.0,
+                        g.camera_height,
+                        page_target.w,
+                        page_target.h - g.camera_height,
+                    );
+                    views::empty(
+                        &mut page,
+                        r,
+                        "square.dashed",
+                        "Aucune section",
+                        "Activez des sections dans les réglages.",
+                    );
+                    page.hit(r, crate::scene::Action::OpenSettings, "Réglages");
+                }
+            }
+            if open < 0.99 {
+                // No clicks on a half-open page.
+                page.hits.clear();
+            }
+        }
+
+        let refresh = match (closed.refresh, page.refresh) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
+        LayeredScene {
+            silhouette,
+            refresh,
+            shows_metrics: page.shows_metrics,
+            shows_camera: page.shows_camera,
+            scroll_extent: page.scroll_extent,
+            closed: Group::new(
+                closed,
+                closed_target,
+                Point::new(g.shape_x(closed_target.w), 0.0),
+            ),
+            page: Group::new(page, page_target, Point::new(g.shape_x(page_target.w), 0.0)),
+        }
+    }
+
     /// Scroll gesture; returns the action to apply (section change etc.).
     pub fn scroll(
         &mut self,
@@ -405,5 +513,116 @@ mod tests {
         };
         assert_eq!(m.scroll(e, &s, false, 120.0), None);
         assert_eq!(m.scroll.get(&Section::Music), Some(&120.0));
+    }
+
+    fn timer_state(remaining: f64) -> IslandState {
+        IslandState {
+            timers: Some(TimersState {
+                timers: vec![CountdownTimer {
+                    ends_at: None,
+                    id: 1,
+                    label: String::new(),
+                    duration_secs: 60.0,
+                    remaining_secs: remaining,
+                    observed_at: 0.0,
+                    run: TimerRun::Running,
+                }],
+                ..Default::default()
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn layers_hold_no_alpha_and_hits_follow_the_open_fraction() {
+        let s = Settings::default();
+        let mut m = model(&s);
+        let st = IslandState::default();
+        let page = m.geometry.expanded_size(&s.island);
+        m.machine.open();
+        m.retarget(&st, &s, 0.0);
+        m.motion.snap(page.w, page.h, true);
+        let open = m.layers(&st, &s, 0.0, None);
+        assert!(!open.page.ops.iter().any(|o| matches!(o, Op::Alpha(_))));
+        assert!(!open.closed.ops.iter().any(|o| matches!(o, Op::Alpha(_))));
+        assert!(!open.page.hits.is_empty(), "a fully open page takes clicks");
+        m.motion.snap(page.w, page.h, false);
+        m.surface = Surface::Expanded;
+        let half = m.layers(&st, &s, 0.0, None);
+        assert!(half.page.hits.is_empty(), "no clicks on a half-open page");
+        assert_eq!(half.page.ops, open.page.ops, "same content at any opacity");
+    }
+
+    #[test]
+    fn page_layer_ignores_the_animated_width() {
+        let s = Settings::default();
+        let mut m = model(&s);
+        let st = IslandState::default();
+        let page = m.geometry.expanded_size(&s.island);
+        m.machine.open();
+        m.retarget(&st, &s, 0.0);
+        m.motion.snap(page.w, page.h, true);
+        let full = m.layers(&st, &s, 0.0, None);
+        m.motion.snap(page.w - 80.0, page.h, true);
+        let narrower = m.layers(&st, &s, 0.0, None);
+        assert_eq!(narrower.page.target, page);
+        assert_eq!(narrower.page.ops, full.page.ops);
+        assert_eq!(narrower.page.generation, full.page.generation);
+        assert_eq!(narrower.silhouette.w, page.w - 80.0);
+    }
+
+    #[test]
+    fn closed_layer_is_laid_out_for_its_strip_not_the_shape() {
+        let s = Settings::default();
+        let mut m = model(&s);
+        let st = timer_state(30.0);
+        m.retarget(&st, &s, 0.0);
+        let target = m.surface_size(&m.surface, &s);
+        m.motion.snap(target.w + 90.0, target.h, false);
+        let a = m.layers(&st, &s, 0.0, None);
+        m.motion.snap(target.w, target.h, false);
+        let b = m.layers(&st, &s, 0.0, None);
+        assert!(!a.closed.ops.is_empty());
+        assert_eq!(a.closed.ops, b.closed.ops);
+        assert_eq!(a.closed.generation, b.closed.generation);
+        assert_eq!(a.closed.target, target);
+        assert!(
+            a.page.ops.is_empty(),
+            "nothing open, nothing on the page layer"
+        );
+    }
+
+    #[test]
+    fn generation_changes_only_with_content() {
+        let s = Settings::default();
+        let mut m = model(&s);
+        let st = timer_state(30.0);
+        m.retarget(&st, &s, 0.0);
+        let first = m.layers(&st, &s, 0.0, None);
+        let again = m.layers(&st, &s, 0.0, None);
+        assert_eq!(first.closed.generation, again.closed.generation);
+        // The strip's activity is chosen by `retarget`, as on every state update.
+        let later = timer_state(5.0);
+        m.retarget(&later, &s, 0.0);
+        let ticked = m.layers(&later, &s, 0.0, None);
+        assert_ne!(first.closed.generation, ticked.closed.generation);
+    }
+
+    #[test]
+    fn closed_strip_opens_on_click_only_while_closed() {
+        let s = Settings::default();
+        let mut m = model(&s);
+        let st = timer_state(30.0);
+        m.retarget(&st, &s, 0.0);
+        let closed = m.layers(&st, &s, 0.0, None);
+        assert!(
+            matches!(closed.closed.hits.as_slice(), [h] if h.action == crate::scene::Action::Open(Some(Section::Timers))),
+            "{:?}",
+            closed.closed.hits
+        );
+        m.motion
+            .snap(m.geometry.expanded_size(&s.island).w, 100.0, true);
+        let fading = m.layers(&st, &s, 0.0, None);
+        assert!(fading.closed.hits.is_empty());
     }
 }

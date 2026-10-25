@@ -3,7 +3,7 @@
 use super::util::{ns_color, ns_rect};
 use crate::geom::{Point, Rect};
 use crate::geometry::Seg;
-use crate::scene::{Align, Op, Scene, TextStyle, Weight};
+use crate::scene::{Align, Group, Op, Scene, TextStyle, Weight};
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -304,7 +304,18 @@ impl Painter {
     /// symbols, file thumbnails, text attributes) without drawing, so the
     /// first draw of new content costs the same as the rest.
     pub fn prepare(&mut self, scene: &Scene, artwork: ArtworkSource) {
-        for op in &scene.ops {
+        self.prepare_ops(&scene.ops, artwork);
+    }
+
+    // Wired into the layered island draw next; see island::layers.
+    #[allow(dead_code)]
+    /// [`Painter::prepare`] for one layer of a [`LayeredScene`].
+    pub fn prepare_group(&mut self, group: &Group, artwork: ArtworkSource) {
+        self.prepare_ops(&group.ops, artwork);
+    }
+
+    fn prepare_ops(&mut self, ops: &[Op], artwork: ArtworkSource) {
+        for op in ops {
             match op {
                 Op::Symbol {
                     name,
@@ -330,13 +341,25 @@ impl Painter {
     }
 
     pub fn paint(&mut self, scene: &Scene, artwork: ArtworkSource) {
+        self.paint_ops(&scene.ops, artwork);
+    }
+
+    // Wired into the layered island draw next; see island::layers.
+    #[allow(dead_code)]
+    /// [`Painter::paint`] for one layer of a [`LayeredScene`]: drawn at full
+    /// alpha, the layer's opacity is applied by its caller.
+    pub fn paint_group(&mut self, group: &Group, artwork: ArtworkSource) {
+        self.paint_ops(&group.ops, artwork);
+    }
+
+    fn paint_ops(&mut self, ops: &[Op], artwork: ArtworkSource) {
         let _p = crate::perf::Probe::new("paint");
         let Some(gc) = NSGraphicsContext::currentContext() else {
             return;
         };
         let cgc = cg();
         let mut depth = 0;
-        for op in &scene.ops {
+        for op in ops {
             let _op = crate::perf::Probe::new(op_stage(op));
             match op {
                 Op::Fill {
