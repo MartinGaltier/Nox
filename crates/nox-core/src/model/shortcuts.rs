@@ -27,7 +27,7 @@ pub struct ShortcutEntry {
 /// System controls (E7). `Unavailable(NotSupported)` when the current
 /// device does not expose the control (e.g. HDMI output volume, a mic
 /// without a mute switch, an external display's brightness).
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ControlsState {
     /// Default output volume 0..1.
     pub volume: Reading<f32>,
