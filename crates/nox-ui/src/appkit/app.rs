@@ -257,6 +257,8 @@ impl App {
         self.update_fullscreen();
         #[cfg(debug_assertions)]
         super::snapshot::schedule(self);
+        #[cfg(debug_assertions)]
+        super::hover_probe::schedule(self);
     }
 
     #[cfg(debug_assertions)]
@@ -689,6 +691,16 @@ impl App {
             i.model.capsule_compact(),
             Point::new(p.x - i.offset, p.y),
         )
+    }
+
+    /// Debug probe: the pointer enters the middle of the island or leaves it.
+    #[cfg(debug_assertions)]
+    pub fn debug_hover(&self, inside: bool) {
+        let p = inside.then(|| {
+            let f = super::util::rect(self.panel.frame());
+            Point::new(f.w / 2.0, 10.0)
+        });
+        self.pointer_moved(p);
     }
 
     pub fn pointer_moved(&self, p: Option<Point>) {
