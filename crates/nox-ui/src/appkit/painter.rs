@@ -580,6 +580,57 @@ mod bench {
         #[allow(deprecated)]
         img.unlockFocus();
     }
+
+    /// Cost of drawing a page while its fade runs (`Op::Alpha(open)` around
+    /// the page, as the island emits it), against the fully open page.
+    /// `cargo test --release -p nox-ui perf_alpha -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark, prints timings"]
+    fn perf_alpha() {
+        const RUNS: usize = 300;
+        let mut state = IslandState::default();
+        let art = synthetic_artwork(1200.0);
+        #[cfg(debug_assertions)]
+        {
+            super::super::fixture::overlay(&mut state, nox_core::model::now());
+            if let Some(np) = state.music.as_mut().and_then(|m| m.now_playing.as_mut()) {
+                np.artwork = Some(art.clone());
+                np.artwork_id = 1;
+            }
+        }
+        let src = |id: u64| (id == 1).then(|| art.clone());
+        let settings = Settings::default();
+        let cx = test_util::ctx(&state, &settings);
+        let rect = test_util::page_rect();
+        let img = NSImage::initWithSize(NSImage::alloc(), NSSize::new(700.0, 300.0));
+        #[allow(deprecated)]
+        img.lockFocus();
+        let mut painter = Painter::default();
+        println!("page\topen\tpaint p50/p95/max µs");
+        for sec in [Section::Music, Section::System, Section::Timers] {
+            let mut page = Scene::default();
+            views::page(&mut page, &cx, rect, sec);
+            for open in [1.0, 0.8, 0.6, 0.45] {
+                let mut ops = vec![Op::Alpha(open)];
+                ops.extend(page.ops.iter().cloned());
+                ops.push(Op::Alpha(1.0));
+                let scene = Scene {
+                    ops,
+                    ..Default::default()
+                };
+                let mut paint = Vec::with_capacity(RUNS);
+                for _ in 0..RUNS {
+                    let t = Instant::now();
+                    painter.paint(&scene, &src);
+                    paint.push(t.elapsed().as_secs_f64() * 1e6);
+                }
+                let (p50, p95, pmax) = summary(&mut paint);
+                println!("{sec:?}\t{open}\t{p50:.0}/{p95:.0}/{pmax:.0}");
+            }
+        }
+        #[allow(deprecated)]
+        img.unlockFocus();
+    }
 }
 
 #[cfg(test)]
