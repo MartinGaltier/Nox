@@ -2,7 +2,7 @@
 //! `app_support_dir()/scratchpad/note.txt`: atomic writes, mode 0600,
 //! 1 s debounce, 256 KiB maximum, flushed on stop, never logged.
 
-use crossbeam_channel::{Receiver, Sender, select, unbounded};
+use crossbeam_channel::{Receiver, Sender, after, never, select, unbounded};
 use nox_core::model::scratchpad::{ScratchpadCommand, ScratchpadState};
 use nox_core::{CancelToken, Hub, Module, ModuleContext, ModuleError, ModuleId, Worker};
 use std::path::{Path, PathBuf};
@@ -143,12 +143,17 @@ fn run(hub: Hub, path: PathBuf, rx: Receiver<ScratchpadCommand>, token: CancelTo
     }
     e.publish();
     while !token.is_cancelled() {
+        // Wake for a command, or when the pending save is due (no polling).
+        let due = match e.dirty_since {
+            Some(t) => after((t + DEBOUNCE).saturating_duration_since(Instant::now())),
+            None => never(),
+        };
         select! {
             recv(rx) -> c => match c {
                 Ok(c) => e.on_command(c),
                 Err(_) => break,
             },
-            default(Duration::from_millis(250)) => {},
+            recv(due) -> _ => {},
         }
         if e.dirty_since.is_some_and(|t| t.elapsed() >= DEBOUNCE) {
             e.save();

@@ -273,6 +273,8 @@ fn run(hub: Hub, settings: DownloadSettings, rx: Receiver<Msg>, token: CancelTok
         } else {
             IDLE_TICK
         };
+        // Sleep until the next rescan is due (or an event arrives), not 250 ms.
+        let due = tick.saturating_sub(last_scan.elapsed());
         select! {
             recv(fs_rx) -> _ => {
                 e.scan();
@@ -298,7 +300,7 @@ fn run(hub: Hub, settings: DownloadSettings, rx: Receiver<Msg>, token: CancelTok
                 }
                 Err(_) => break,
             },
-            default(Duration::from_millis(250)) => {},
+            default(due) => {},
         }
         if last_scan.elapsed() >= tick {
             e.scan();

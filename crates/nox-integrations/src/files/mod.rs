@@ -5,7 +5,7 @@
 //! one-shot `/usr/bin/ditto` or `/usr/bin/zip` (killed if the module stops).
 
 use crate::sys::workspace;
-use crossbeam_channel::{Receiver, Sender, select, unbounded};
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use nox_core::model::files::{FileCommand, FilesState, ShelfItem};
 use nox_core::{CancelToken, Hub, Module, ModuleContext, ModuleError, ModuleId, Worker};
 use std::path::{Path, PathBuf};
@@ -254,14 +254,9 @@ fn run(hub: Hub, rx: Receiver<FileCommand>, token: CancelToken) {
         next_id: 1,
     };
     e.publish();
-    while !token.is_cancelled() {
-        select! {
-            recv(rx) -> c => match c {
-                Ok(c) => e.on_command(c, &token),
-                Err(_) => break,
-            },
-            default(Duration::from_millis(500)) => {},
-        }
+    // Only commands wake this thread; `stop` drops the sender to end the loop.
+    while let Ok(c) = rx.recv() {
+        e.on_command(c, &token);
     }
     e.hub.update(|s| s.files = None);
 }
