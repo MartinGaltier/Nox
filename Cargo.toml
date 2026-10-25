@@ -10,6 +10,7 @@ members = [
     "crates/nox-ui",
     "crates/nox-app",
     "crates/nox-nowplaying",
+    "crates/nox-audio",
 ]
 default-members = ["crates/nox-app", "crates/nox-helper"]
 
@@ -24,6 +25,7 @@ rust-version = "1.90"
 [workspace.dependencies]
 nox-core = { path = "crates/nox-core" }
 nox-metrics = { path = "crates/nox-metrics" }
+nox-audio = { path = "crates/nox-audio" }
 nox-power = { path = "crates/nox-power" }
 nox-integrations = { path = "crates/nox-integrations" }
 nox-activities = { path = "crates/nox-activities" }
