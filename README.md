@@ -64,6 +64,9 @@ Les modules qui en exigent une intrusive sont **désactivés par défaut**.
 | Accessoires Bluetooth | Bluetooth | activé |
 | Suivi des téléchargements | Dossier Téléchargements | activé |
 | Maintien éveillé capot fermé | mot de passe administrateur **une seule fois** pour installer le helper | jamais sans clic explicite |
+| Niveaux audio réels du visualiseur, mixeur par app | Enregistrement audio du système (Core Audio, au premier usage) | **désactivés** |
+| Historique du presse-papiers | « Coller depuis d'autres apps » (alerte macOS 15.4+) | **désactivé** |
+| Captures récentes | dossier Bureau | **désactivé** |
 | Limites Claude via OAuth | aucune ; lit le jeton déjà stocké par Claude Code | **désactivé** (opt-in dans Réglages → Agents IA) |
 
 Lecture en cours : macOS réserve MediaRemote aux binaires de la plateforme depuis 15.4.
@@ -76,7 +79,8 @@ permanente.
 - **Îlot** : survol → déplié (délai réglable), clic sur une section, balayage horizontal au
   trackpad pour changer de section. Il ne prend jamais le focus clavier de l'app active.
 - **Sections** : Musique, Calendrier, Agents IA, Minuteurs, Notifications, Téléchargements,
-  Fichiers, Système, Maintien éveillé, Accessoires, Surveillance, Caméra, Raccourcis.
+  Fichiers, Système, Maintien éveillé, Accessoires, Surveillance, Caméra, Raccourcis,
+  Captures, Bloc-notes, Presse-papiers, Mixeur.
   Activables, désactivables et réorganisables dans Réglages → Îlot. Désactiver une section
   ou un module **arrête réellement** sa collecte.
 - **Moniteur système** : barre des menus → Moniteur système. Une valeur introuvable
@@ -96,11 +100,15 @@ permanente.
 ## Données et vie privée
 
 - Réglages : `~/Library/Application Support/Nox/settings.json` (0600).
-- Caches (pochettes, paroles plafonnées à 200 entrées, supprimées si les paroles sont désactivées) : `~/Library/Caches/io.github.martingaltier.nox/`.
+- Bloc-notes : `~/Library/Application Support/Nox/scratchpad/note.txt` (0600) — seule donnée personnelle conservée volontairement.
+- Caches (pochettes et paroles plafonnés et purgeables, supprimés quand l'option est désactivée) : `~/Library/Caches/io.github.martingaltier.nox/`.
 - Journal : `~/Library/Logs/Nox/nox.log`. Il ne contient ni titres, ni notifications,
   ni événements, ni prompts.
-- Aucune télémétrie. Requêtes réseau : uniquement LRCLIB (paroles, si activées en ligne) et
-  l'API d'usage Claude (si l'opt-in OAuth est activé).
+- Aucune télémétrie. Requêtes réseau, toutes optionnelles et désactivées par défaut : LRCLIB
+  (paroles en ligne), iTunes Search et miniatures YouTube (pochettes manquantes ; titre et
+  artiste envoyés), API d'usage Claude (opt-in OAuth).
+- Le mixeur et les niveaux réels n'enregistrent ni n'envoient aucun son ; une app laissée à
+  100 % n'est jamais interceptée (`docs/AUDIO.md`).
 
 ## Récupération des réglages de veille
 
