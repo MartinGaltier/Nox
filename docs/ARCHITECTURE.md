@@ -16,9 +16,9 @@
    ┌────────┴──────────┬──────────────┬──────────────┴─┬──────────────┐
    │ nox-integrations  │ nox-activities│ nox-metrics    │ nox-power    │
    │ musique, agenda,  │ agents IA,    │ CPU/GPU/temp/  │ assertions,  │
-   │ notifs, caméra,   │ surveillance, │ RAM/batterie/  │ capot fermé ─┼──▶ nox-helper
-   │ accessoires, DL,  │ minuteurs,    │ réseau/disque  │ (client)     │   (launchd root,
-   │ fichiers, raccourcis│ compagnon   │                │              │    socket Unix)
+   │ notifs, caméra,   │ surveillance, │ RAM/batterie/  │ capot fermé ─┼──▶ sudo -n pmset
+   │ accessoires, DL,  │ minuteurs,    │ réseau/disque  │ (client)     │   (règle sudo, journal,
+   │ fichiers, raccourcis│ compagnon   │                │              │    gardien utilisateur)
    └───────────────────┴──────────────┴────────────────┴──────────────┘
 ```
 
@@ -33,7 +33,7 @@
   * `settings` — `Settings` JSON (`~/Library/Application Support/Nox/settings.json`), écriture atomique 0600.
   * `paths`, `permissions`, `main_thread` (`run_async`, `run_sync`).
 * `nox-app` : point d'entrée ; assemble modules + hub + UI (propriété du coordinateur).
-* `nox-helper` : binaire privilégié minimal (voir docs/SLEEP_RECOVERY.md).
+* Capot fermé : aucun processus root. Une règle sudo étroite (`pmset -a disablesleep`), un journal utilisateur et un gardien `nox --lid-guard` (voir docs/SLEEP_RECOVERY.md).
 
 ## Fils d'exécution
 
@@ -46,8 +46,8 @@
   justifiées dans le code et ici :
   * `/usr/bin/perl` hébergeant une cdylib Rust pour MediaRemote (entitlement réservé
     aux binaires plateforme depuis macOS 15.4) — **un seul processus long**, pas de boucle.
-  * `/usr/bin/pmset` exécuté **par le helper root** uniquement à l'activation/restauration.
-  * `osascript … with administrator privileges` **une seule fois** pour installer le helper,
+  * `/usr/bin/pmset` exécuté via `sudo -n` (règle sudoers limitée) uniquement à l'activation/restauration.
+  * `osascript … with administrator privileges` **une seule fois** pour installer la règle sudo,
     après consentement explicite (mot de passe saisi dans la boîte de dialogue système,
     jamais stocké, sudoers jamais modifié).
 
@@ -59,7 +59,7 @@
 | `crates/nox-core/src/model/{music,calendar,notifications,accessories,downloads,files,shortcuts,camera}.rs`, `crates/nox-integrations/**`, `crates/nox-nowplaying/**` | Agent Intégrations | `agent/integrations` |
 | `crates/nox-core/src/model/{agents,watch,timers,companion}.rs`, `crates/nox-activities/**` | Agent Activités | `agent/activities` |
 | `crates/nox-core/src/model/metrics.rs`, `crates/nox-metrics/**`, `docs/METRICS_SOURCES.md` | Agent Mesures | `agent/metrics` |
-| `crates/nox-core/src/model/power.rs`, `crates/nox-power/**`, `crates/nox-helper/**`, `docs/SLEEP_RECOVERY.md`, `scripts/*helper*` | Agent Énergie | `agent/power` |
+| `crates/nox-core/src/model/power.rs`, `crates/nox-power/**`, `docs/SLEEP_RECOVERY.md`, `scripts/install-lid-rule.sh` | Agent Énergie | `agent/power` |
 | `crates/nox-ui/**`, `packaging/AppIcon.icns` | Agent Interface | `agent/interface` |
 | `crates/nox-app/**`, `Cargo.toml` racine, `scripts/build-app.sh`, `packaging/*.plist`, CI, `docs/PARITY.md`, README | Coordinateur | `main` |
 

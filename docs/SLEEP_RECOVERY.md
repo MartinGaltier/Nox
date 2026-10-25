@@ -1,30 +1,46 @@
 # Maintien éveillé capot fermé : fonctionnement, récupération, limites
 
-Ce document couvre le mode **capot fermé** (`KeepAwakeMode::ClosedLid`) et l'assistant
-privilégié `nox-helper`. Les deux autres modes (`System`, `SystemAndDisplay`) n'utilisent
-que des assertions IOPM détenues par le processus Nox. Le noyau les libère dès que le
-processus disparaît, il n'y a donc rien à récupérer pour eux.
+Ce document couvre le mode **capot fermé** (`KeepAwakeMode::ClosedLid`). Les deux autres
+modes (`System`, `SystemAndDisplay`) n'utilisent que des assertions IOPM détenues par le
+processus Nox : le noyau les libère dès que le processus disparaît, il n'y a rien à
+récupérer pour eux.
 
-> **Statut :** implémenté et testé automatiquement (logique, protocole, serveur réel non
-> privilégié avec un `pmset` factice, client tué par `SIGKILL`). **Non testé physiquement**
-> capot fermé : l'agent n'a ni installé le helper, ni lancé `sudo`, ni modifié `pmset`.
+> **Statut :** implémenté et testé automatiquement (logique, journal, gardien, script
+> d'installation sur une copie hors `/etc`, lecture de `SleepDisabled`). **Non testé
+> physiquement** : l'agent n'a ni installé la règle, ni lancé `sudo`, ni modifié `pmset`.
+> Voir § 8 pour la procédure à suivre.
 
-## 1. Pourquoi un helper root
+## 1. Pourquoi une règle sudo, et pourquoi plus de daemon root
 
-* Les assertions IOPM (`PreventUserIdleSystemSleep`, `PreventUserIdleDisplaySleep`)
-  empêchent seulement la veille **d'inactivité**. À la fermeture du capot d'un MacBook
-  sans écran externe, le noyau met le Mac en veille quand même.
-* Seul `pmset disablesleep 1` (`SleepDisabled`) empêche cette veille, et il faut être root
-  pour le régler.
-* Vorssaint installe une règle sudoers `NOPASSWD` pour `pmset disablesleep 0/1`
-  (`SudoersSupport.swift`, `ShellSupport.swift`, `KeepAwakeManager.swift`). La restauration
-  dépend alors de l'app : marqueur dans UserDefaults, rejoué au lancement suivant.
-  **Nox ne modifie jamais sudoers et n'enregistre aucun mot de passe.** Le helper est un
-  daemon launchd minimal qui restaure **de lui-même**.
+* Les assertions IOPM (`PreventUserIdleSystemSleep`, …) n'empêchent que la veille
+  **d'inactivité**. À la fermeture du capot d'un MacBook sans écran externe, le noyau met
+  le Mac en veille quand même.
+* Seul `pmset -a disablesleep 1` (`SleepDisabled`) l'empêche, et seul root peut le régler.
+* L'ancienne version installait un daemon launchd root (`nox-helper`) qui gardait une
+  connexion ouverte avec l'app. Elle est remplacée : **Nox n'a plus aucun processus root.**
+  Une règle sudoers étroite suffit à régler `disablesleep`, et la restauration se fait
+  par des processus de l'utilisateur (journal, gardien, LaunchAgent).
 
-## 2. Compatibilité vérifiée sur ce Mac (macOS 27.0, 26A428, MacBook Air M2)
+Méthode retenue, comme Vorssaint (`SudoersSupport.swift`, commit e916961) :
 
-Commandes lancées par l'agent, toutes sans privilèges :
+```
+#501 ALL=(root) NOPASSWD: /usr/bin/pmset -a disablesleep 1, /usr/bin/pmset -a disablesleep 0
+```
+
+* La règle est accordée par **uid numérique** (`#501`), pas par nom : un nom d'utilisateur
+  devrait être nettoyé contre la syntaxe sudoers et le shell, un uid ne contient que des
+  chiffres.
+* Le fichier est `/etc/sudoers.d/nox-lid-sleep`. **Pas de point dans le nom** : sudo ignore
+  les fichiers de `/etc/sudoers.d` dont le nom contient un `.` (sudoers(5)). Un fichier
+  `io.github.martingaltier.nox` serait lu par personne et la règle n'aurait jamais
+  d'effet.
+* Nox n'appelle jamais `sudo` sans `-n` : `sudo -n /usr/bin/pmset -a disablesleep 1|0`
+  échoue au lieu de demander un mot de passe. **Nox ne voit ni ne stocke aucun mot de
+  passe.**
+
+## 2. Compatibilité vérifiée sur ce Mac (macOS 27.0, MacBook Air M2)
+
+Commandes lancées par l'agent, sans privilèges :
 
 ```
 $ ls -l /usr/bin/pmset
@@ -33,24 +49,21 @@ $ strings /usr/bin/pmset | grep -n "disablesleep\|SleepDisabled"
 177:SleepDisabled
 178: SleepDisabled
 575:disablesleep
-$ pmset -g          # aucune ligne SleepDisabled : elle n'apparaît que quand la valeur vaut 1
+$ pmset -g | grep SleepDisabled          # aucune ligne : la valeur est 0
 $ ioreg -r -n IOPMrootDomain -d1 -l | grep SleepDisabled
       "SleepDisabled" = No
+$ sudo -n -l /usr/bin/pmset -a disablesleep 1; echo $?    # sans règle : 1
 ```
 
 * `pmset` connaît toujours l'argument `disablesleep`.
-* `pmset -g` n'affiche ` SleepDisabled 1` que lorsque la valeur est active. Vorssaint lit
-  cette sortie.
 * Nox lit la valeur **sans processus externe** : propriété `SleepDisabled` de l'entrée
-  `IOPMrootDomain` de l'IORegistry (`nox_helper::sys::sleep_disabled`). Sur ce Mac elle
-  vaut `false`, ce qui concorde avec `pmset -g`. powerd la publie via
-  `IOPMrootDomain::setProperties` (`kIOPMSleepDisabledKey`, source xnu-12377.121.6). Je
-  n'ai pas pu vérifier, faute de root, que cette propriété passe à `Yes` après
-  `pmset disablesleep 1`. C'est pourquoi le helper confirme chaque écriture en relisant
-  pendant 3 s, et renvoie une erreur si la valeur ne change pas.
-* La valeur est **persistante** : powerd la stocke dans `SystemPowerSettings`
-  (`/Library/Preferences/com.apple.PowerManagement*.plist`). Elle survit au redémarrage,
-  d'où la récupération au démarrage du helper (§ 4).
+  `IOPMrootDomain` (`nox_power::probe::sleep_disabled`). Elle vaut `No` sur ce Mac, ce qui
+  concorde avec `pmset -g`.
+* Je n'ai pas pu vérifier, faute de root, que la propriété passe à `Yes` après
+  `pmset -a disablesleep 1`. C'est pourquoi chaque écriture est **confirmée** : Nox relit
+  la valeur pendant 3 s et signale une erreur si elle ne change pas.
+* La valeur est **persistante** (stockée par powerd). Elle survit au redémarrage : c'est
+  pour cela qu'il existe un LaunchAgent (§ 4).
 
 ### Ce que `disablesleep` désactive, et ce qu'il ne désactive pas
 
@@ -62,83 +75,134 @@ test `userDisabledAllSleep` (posé par `SleepDisabled`) arrive **avant** les exc
 * **la veille d'urgence logicielle sur batterie faible et la veille d'urgence thermique
   sont aussi refusées.**
 
-Restent actifs, car hors de cette fonction : la limitation thermique du CPU/GPU (pression
-thermique, gérée par le matériel et le noyau) et l'extinction matérielle de protection
-(température critique, coupure batterie). Nox ne touche **à aucun réglage thermique**.
+Restent actifs, car hors de cette fonction : la limitation thermique du CPU/GPU et
+l'extinction matérielle de protection. Nox ne touche **à aucun réglage thermique**.
 
-Comme `disablesleep` neutralise ces deux protections logicielles, **le helper les remplace
-lui-même**, même si l'app est figée :
+Comme `disablesleep` neutralise ces deux protections logicielles, **Nox les remplace** par
+des gardes qui tournent même si l'app est figée (gardien, § 3) :
 
-| Garde (dans le helper) | Déclencheur | Action |
+| Garde | Déclencheur | Action |
 |---|---|---|
-| Batterie | sur batterie **et** charge ≤ max(seuil de l'app `stop_below_percent`, **plancher 5 %** imposé par le helper, que le client ne peut pas abaisser) | restaure `SleepDisabled=0`, révoque le bail (`battery`) |
-| Thermique | `com.apple.system.thermalpressurelevel` ≥ 2 (*heavy*) | restaure, révoque (`thermal`) |
-| Bail | aucun `heartbeat` depuis `lease` s (60 s), ou connexion fermée et non reprise sous 60 s | restaure (`lease-expired` / `client-gone`) |
+| Batterie (réglage utilisateur) | sur batterie **et** (`only_on_ac`, ou charge ≤ `stop_below_percent`) | session arrêtée, veille rétablie |
+| Batterie (plancher absolu) | sur batterie **et** charge ≤ **5 %**, même si le seuil est à 0 | idem |
+| Thermique | `com.apple.system.thermalpressurelevel` ≥ 2 (*heavy*) | idem |
 
-Le helper évalue ces gardes toutes les 10 s pendant un bail (IOKit + libnotify, sans
-processus externe). Après une restauration, si le capot est **déjà fermé** et que le
-noyau mettrait en veille à la fermeture (`AppleClamshellState` et
-`AppleClamshellCausesSleep` à `Yes`), il demande la veille (`IOPMSleepSystem`) : macOS
-n'évalue le capot qu'au moment où il bouge. Sans cela, un Mac fermé dans un sac pendant
-la session y resterait éveillé. Vorssaint fait la même chose, problème n° 1729.
+Nox évalue ses gardes à chaque tick (au plus 15 s). Le gardien les évalue toutes les 10 s.
 
 ## 3. Architecture
 
 ```
-Nox.app (utilisateur)                         nox-helper (root, launchd)
-  nox-power Engine ── socket Unix ──────────▶ peer check → HelperCore → /usr/bin/pmset -a disablesleep 1|0
-   assertion système      /var/run/io.github.martingaltier.nox.helper.sock (root:staff 0660)
-   bail : acquire/heartbeat 15 s/release      journal : /Library/Application Support/Nox/helper-state.json (0600)
+Nox.app (utilisateur)                                  gardien (utilisateur, même binaire)
+  Engine ── LidClient ─┬─ journal  lid-state.json ◀──┐  nox --lid-guard <pid de Nox>
+                       ├─ sudo -n pmset …            │   kqueue NOTE_EXIT sur Nox
+                       └─ lance le gardien ──────────┼─▶ Nox mort ? → restaure, efface, quitte
+                                                     │   Nox vivant + batterie/thermique ?
+LaunchAgent (utilisateur, à l'ouverture de session)  │     → restaure, marque le journal, quitte
+  nox --lid-restore ─────────────────────────────────┘
 ```
 
-* **Fichiers installés :** `/Library/PrivilegedHelperTools/io.github.martingaltier.nox.helper`
-  (root:wheel 0755) et `/Library/LaunchDaemons/io.github.martingaltier.nox.helper.plist`
-  (`RunAtLoad`, `KeepAlive`, journal d'erreurs `/Library/Logs/Nox/nox-helper.log`, sans
-  donnée personnelle).
-* **Protocole** (une ligne ASCII ≤ 128 octets par requête, liste blanche stricte) :
-  `version`, `status`, `acquire <lease 5..600> <batterie 0..100>`, `heartbeat`,
-  `release`. Toute autre ligne renvoie `err bad-request`. Le helper n'exécute qu'un seul
-  programme, `/usr/bin/pmset`, par chemin absolu, avec des arguments fixes et un
-  environnement vide.
-* **Vérification du pair :** uid effectif (`getpeereid`) égal à celui de la session
-  console (propriétaire de `/dev/console`) ou à root. Ensuite, le chemin de l'exécutable
-  client (`LOCAL_PEERPID` puis `proc_pidpath`, chemin canonique) doit être celui de l'app
-  pour laquelle le helper a été installé (`--allowed-client`). Si ce n'est pas le cas, la
-  réponse est `err forbidden` et l'UI affiche `HelperStatus::ClientRejected` (« réinstallez »).
-* **Règles de restauration** (`nox_helper::core`, tests unitaires) :
-  1. Le journal (valeur initiale `0`) est écrit puis synchronisé sur disque (`fsync` +
-     `rename`) **avant** l'appel à `pmset`.
-  2. Si la valeur initiale vaut déjà `1`, Nox **n'écrit rien**, ni à l'activation ni à
-     l'arrêt.
-  3. Avant de restaurer, le helper **relit** la valeur. Si elle vaut déjà `0` (changée par
-     l'utilisateur), il n'écrit rien et efface le journal. Il fait de même pendant un bail
-     (révocation `external`).
-  4. Si la relecture est impossible, il restaure `0` par sécurité. Un journal corrompu est
-     traité comme « Nox a posé 1 ».
-  5. Si `pmset` échoue, le journal est conservé et le helper réessaie toutes les 30 s,
-     à un rythme fixe : une requête entrante ne déclenche pas d'essai supplémentaire.
-  6. Le journal n'est écrit que dans un dossier appartenant à root et non inscriptible
-     par le groupe ni les autres. Le fichier temporaire est créé à neuf, sans suivre de
-     lien symbolique (`O_NOFOLLOW`).
-* **launchd :** `KeepAlive = { SuccessfulExit = false }`. Le helper est relancé après
-  un crash, mais pas après un arrêt demandé, ni après une erreur de configuration
-  permanente (chemin de socket occupé par autre chose qu'une socket). Dans ce dernier
-  cas il rejoue d'abord le journal, écrit une ligne dans le log et s'arrête, au lieu de
-  boucler toutes les 10 s.
+Fichiers :
+
+* **Règle :** `/etc/sudoers.d/nox-lid-sleep` (root:wheel 0440), créée par
+  `scripts/install-lid-rule.sh install <uid> <remove-legacy>`.
+* **Journal :** `~/Library/Application Support/Nox/power/lid-state.json` (0600). Il contient
+  `active`, `initial` (valeur avant Nox), `owner_pid`, `guard_pid`, `since`, les paramètres
+  batterie, et `guard_reason` quand le gardien a restauré seul.
+* **LaunchAgent :** `~/Library/LaunchAgents/io.github.martingaltier.nox.lid-restore.plist`
+  (sans `UserName`, sans `LaunchDaemons`), lance `nox --lid-restore` à l'ouverture de session.
+  Créé avec la règle, retiré avec elle.
+
+### Séquence d'activation (`LidClient::acquire`)
+
+1. La règle est présente (`sudo -n -l`) ; sinon erreur claire, rien n'est modifié.
+2. Lecture de `SleepDisabled`. **Déjà à 1 : Nox ne touche à rien** (pas de journal, pas de
+   gardien, valeur laissée à l'utilisateur).
+3. Journal écrit **avant** toute modification : `active = true`, `initial = false`.
+4. Gardien lancé (`process_group(0)`, il survit à un Ctrl-C ou à un arrêt de groupe).
+5. `sudo -n pmset -a disablesleep 1`, puis relecture confirmée pendant 3 s. En cas d'échec,
+   Nox remet la valeur d'origine et efface le journal.
+6. Assertion `PreventUserIdleSystemSleep` comme avant.
+
+### Restauration (`guard::restore`)
+
+* Le journal dit que Nox a posé `1` **et** la valeur lue est encore `1` → `sudo -n pmset … 0`,
+  puis confirmation.
+* La valeur lue est `0` (changée par l'utilisateur ou déjà restaurée) → **rien n'est
+  écrit**. Une valeur choisie par l'utilisateur n'est jamais écrasée.
+* Lecture impossible → `0` (le côté sûr). Si l'écriture échoue, le journal reste : le
+  gardien réessaie toutes les 10 s (au plus 60 fois), et le prochain lancement aussi.
+
+### Le gardien (`nox --lid-guard <pid>`)
+
+* Attend la fin de Nox par kqueue (`EVFILT_PROC`, `NOTE_EXIT`), avec un délai de 10 s pour
+  évaluer les gardes batterie et thermique.
+* Nox mort : restaure selon le journal, efface le journal, quitte.
+* Gardes déclenchées alors que Nox vit : restaure, marque le journal
+  (`active = false`, `guard_reason`), quitte. Nox lit cette marque à son prochain tick,
+  arrête la session avec la raison (« Batterie sous le seuil », « Température élevée »)
+  et prévient l'utilisateur.
+* Sans journal, ou journal d'un autre propriétaire : quitte sans rien faire.
+* Nox l'arrête à la fin normale de session (après avoir restauré). Un `SIGTERM` reçu ne
+  restaure rien : le journal décide, et il a déjà été effacé.
 
 ## 4. Comportement après incident
 
 | Incident | Ce qui se passe |
 |---|---|
-| Arrêt normal / Quitter | `Engine::stop` → `release` → le helper restaure. |
-| Crash de Nox, `kill -9`, arrêt forcé | Le noyau ferme la socket ; après 60 s sans reconnexion, le helper restaure. Au relancement de Nox, `startup_recovery()` voit le marqueur `~/Library/Application Support/Nox/power/closed-lid-lease.json` et envoie `release` tout de suite, puis affiche une notice. |
-| Nox figé (socket ouverte, plus de heartbeat) | Après 60 s, le helper restaure (`lease-expired`). |
-| Mac débranché ou batterie basse, app figée | Garde batterie du helper (≤ 10 s). |
-| Crash du helper | launchd le relance (`KeepAlive`). Au démarrage, journal présent → restauration. L'app reconnecte au heartbeat suivant et reprend un bail. |
-| Redémarrage / coupure de courant | Au démarrage, launchd lance le helper (`RunAtLoad`) : journal présent → restauration (`SleepDisabled` est persistant). |
-| `launchctl bootout` / désinstallation | `SIGTERM` → le helper restaure avant de quitter. Le script de désinstallation lance ensuite `--recover` si un journal subsiste. |
+| Arrêt de session / Quitter | `Engine::stop` → restauration par le journal, arrêt du gardien. |
+| Crash de Nox, `kill -9`, arrêt forcé | Le gardien voit Nox disparaître (kqueue) et restaure dans la seconde. Au lancement suivant, `startup_recovery` lit le journal et le trace dans une notice. |
+| Nox figé (vivant mais inactif) | Pas de restauration par le gardien : il ne surveille que la mort et les gardes. Les gardes batterie et thermique restent actives. |
+| Mac débranché, batterie basse | Gardes de Nox et du gardien, ≤ 10 s. |
+| Crash, puis redémarrage (ou coupure) | `SleepDisabled` persiste. À l'ouverture de session, le LaunchAgent lance `nox --lid-restore`, qui lit le journal et restaure. |
+| Journal illisible | Traité comme « Nox a posé 1 » : restauration à `0`. |
+| Règle retirée pendant une session | La restauration échoue (sudo refuse) : le journal reste, le gardien réessaie, Nox affiche l'erreur. Voir § 5. |
 
-## 5. Récupération manuelle
+## 5. Installation et retrait
+
+* **Installation :** seulement sur action explicite (le bouton « Autoriser le capot fermé »
+  de Maintien éveillé). Une alerte explique ce qui va être installé, puis macOS demande le
+  mot de passe administrateur **une fois**. Le script `scripts/install-lid-rule.sh`, embarqué
+  dans le binaire, génère lui-même la règle à partir de l'uid numérique, la valide avec
+  `visudo -cf` **avant** de l'installer, puis la déplace atomiquement. Rien n'est installé si
+  la validation échoue. Ensuite, Nox écrit le LaunchAgent et vérifie `sudo -n -l`.
+* **Pourquoi le script ne lit aucun fichier produit par l'utilisateur :** un fichier temporaire
+  écrit par Nox, lu par root après l'invite, pourrait être remplacé entre les deux étapes.
+  La règle est donc générée en root, à partir d'un nombre seulement.
+* **Ancien assistant :** si `/Library/LaunchDaemons/io.github.martingaltier.nox.helper.plist`
+  est présent, la même invite le retire (`bootout`, restauration via son `--recover` s'il
+  reste un journal, suppression des fichiers).
+* **Retrait :** bouton « Retirer l’autorisation capot fermé » (une invite), ou
+  `sudo scripts/install-lid-rule.sh remove` depuis le dépôt. Nox arrête d'abord la session
+  en cours, donc la veille est restaurée, puis le script supprime `/etc/sudoers.d/nox-lid-sleep`
+  et l'ancien helper s'il existe, et Nox supprime le LaunchAgent.
+
+## 6. Menaces et limites
+
+* **Tout processus de cet utilisateur peut basculer `disablesleep`.** La règle autorise
+  `sudo -n /usr/bin/pmset -a disablesleep 1|0` à l'uid de l'utilisateur, sans mot de passe.
+  C'est le prix de la méthode, comme pour Vorssaint. Un programme malveillant de la session
+  peut donc empêcher la veille capot fermé, mais il ne peut rien faire d'autre avec cette
+  règle : aucune autre commande, aucun autre fichier.
+* **Le gardien est un processus de l'utilisateur.** Un processus du même uid peut le tuer.
+  Dans ce cas, Nox restaure à la fin de session, et le LaunchAgent restaure à l'ouverture
+  de session suivante. Un `SIGKILL` du gardien pendant que Nox vit ne change rien tant
+  que Nox tourne (il restaure à la fin de session). Si Nox meurt ensuite, la veille reste
+  désactivée jusqu'au prochain lancement de Nox ou à la prochaine ouverture de session.
+* **Un `1` posé par l'utilisateur pendant une session de Nox** est indiscernable de celui de
+  Nox : il sera ramené à `0` à la fin de session. Un `0` posé pendant la session est
+  respecté.
+* **Le binaire de Nox est modifiable par un administrateur.** Le LaunchAgent et le gardien
+  pointent vers `Nox.app/Contents/MacOS/nox`. Déplacer l'app après l'installation casse le
+  LaunchAgent (launchd journalise l'erreur) : réinstaller l'autorisation depuis la nouvelle
+  copie.
+* **Pas de signature Developer ID** (ad hoc). Rien ne prouve l'origine du binaire autorisé ;
+  seule la règle, elle, est limitée par construction.
+* **Sommeil forcé :** pendant une session, `SleepDisabled` bloque aussi la veille demandée
+  depuis le menu Pomme. C'est le comportement de macOS.
+* **Chaleur :** la garde thermique (*heavy*) arrête la session. C'est volontaire, car
+  `disablesleep` désactive la veille d'urgence thermique.
+
+## 7. Récupération manuelle
 
 ```sh
 # 1. État actuel (aucune ligne = veille normale)
@@ -148,122 +212,34 @@ ioreg -r -n IOPMrootDomain -d1 -l | grep SleepDisabled
 # 2. Rétablir la veille capot fermé
 sudo pmset -a disablesleep 0
 
-# 3. Arrêter et retirer le helper (il restaure s'il avait modifié la valeur)
-sudo launchctl bootout system/io.github.martingaltier.nox.helper
-sudo rm -f /Library/LaunchDaemons/io.github.martingaltier.nox.helper.plist \
-           /Library/PrivilegedHelperTools/io.github.martingaltier.nox.helper \
-           /var/run/io.github.martingaltier.nox.helper.sock \
-           "/Library/Application Support/Nox/helper-state.json"
-rm -f "$HOME/Library/Application Support/Nox/power/closed-lid-lease.json"
-
-# ou, depuis le dépôt :
-sudo scripts/uninstall-helper.sh
+# 3. Retirer la règle, l'ancien helper s'il existe, et le LaunchAgent
+sudo scripts/install-lid-rule.sh remove          # depuis le dépôt
+rm -f ~/Library/LaunchAgents/io.github.martingaltier.nox.lid-restore.plist
+rm -f "$HOME/Library/Application Support/Nox/power/lid-state.json"   # journal, si présent
 ```
 
-Journal du helper : `/Library/Logs/Nox/nox-helper.log`.
-
-## 6. Installation
-
-* Uniquement sur action explicite (`PowerCommand::InstallHelper`, bouton « Installer
-  l'assistant »). Nox lance **une fois** `osascript -e 'do shell script "…" with
-  administrator privileges'`. Le mot de passe est saisi dans la boîte de dialogue système :
-  Nox ne le voit pas et ne le stocke pas. Le script exécuté est
-  `scripts/install-helper.sh`, **embarqué dans le binaire signé** (`include_str!`). Il n'y
-  a pas de fichier temporaire modifiable entre l'écriture et l'exécution. Quitter Nox
-  pendant la boîte de dialogue tue le processus `osascript`, ce qui abandonne la demande
-  (non vérifié avec une vraie boîte de dialogue).
-* Le script **copie d'abord** le helper depuis
-  `Nox.app/Contents/Library/LaunchServices/nox-helper` vers un fichier root, puis
-  **vérifie cette copie** (`codesign --verify --strict -R='identifier
-  "io.github.martingaltier.nox.helper"'`). Vérifier l'original puis le copier laisserait
-  à un processus du même utilisateur le temps d'échanger le fichier entre les deux
-  étapes (TOCTOU) et de faire exécuter son code en root. Cette vérification garantit
-  seulement que **ce qui est vérifié est ce qui est installé**. Elle **n'authentifie pas
-  l'origine** : une signature ad hoc ne prouve rien, puisque n'importe qui peut signer ad
-  hoc un binaire avec le même identifiant. Un processus du même utilisateur qui remplace
-  le helper dans Nox.app *avant* l'installation n'est donc pas détecté (voir § 7 ; seule
-  une signature Developer ID avec exigence de Team ID fermerait ce cas).
-  L'ancien helper n'est arrêté (`launchctl bootout`) qu'**après** une vérification
-  réussie : en cas d'échec (exit 65), il continue de tourner. Le script fait ensuite générer le plist
-  par le helper lui-même (échappement XML testé, `plutil -lint`), puis lance
-  `launchctl enable` et `bootstrap system` et attend la socket.
-* À la main : `sudo scripts/install-helper.sh /Applications/Nox.app`.
-* Désinstallation : bouton « Désinstaller » (`UninstallHelper`), ou
-  `sudo scripts/uninstall-helper.sh`.
-* `HelperStatus` est détecté sans privilèges : présence des deux fichiers, puis
-  `version` sur la socket (`Installed` / `Outdated` / `Unreachable` / `ClientRejected`).
-
-### Pourquoi pas SMAppService.daemon (analyse, non testé)
-
-* Le daemon doit rester **dans le bundle** (`BundleProgram`). Si l'app est déplacée ou
-  supprimée, la restauration au démarrage ne s'exécute plus, alors que c'est elle qui
-  garantit G9.
-* L'app est signée ad hoc, sans Team ID. Background Task Management associe
-  l'autorisation à l'identité de code, qui change à chaque recompilation ad hoc : il
-  faudrait réapprouver dans Réglages > Ouverture à la connexion. Il n'est pas non plus
-  possible d'exiger une signature précise du client.
-* `osascript … with administrator privileges` fonctionne sans identité de développeur, et
-  le binaire copié dans `/Library/PrivilegedHelperTools` ne dépend plus de
-  l'emplacement de l'app.
-
-## 7. Menaces et limites
-
-* **Usurpation par un processus du même utilisateur.** La vérification du chemin client
-  passe par `pid → proc_pidpath`. Elle n'est pas atomique avec la connexion (réutilisation
-  de pid théorique), et sans Team ID on ne peut pas exiger de signature. Un processus
-  malveillant du même utilisateur qui remplacerait le binaire de Nox.app (dossier
-  modifiable par un admin) pourrait obtenir un bail. Le pire qu'il puisse faire est
-  l'opération autorisée elle-même : empêcher la veille capot fermé tant qu'il envoie des
-  heartbeats, toujours sous les gardes du helper : thermique, et batterie au minimum à
-  5 % même s'il demande un seuil de 0. Il ne peut pas exécuter de commande arbitraire.
-  Comme Nox.app est elle-même modifiable par un administrateur, un attaquant capable de
-  remplacer le helper embarqué *avant* l'installation peut aussi remplacer l'app qui
-  demande le mot de passe. Seule une signature Developer ID avec exigence de Team ID
-  fermerait ce cas.
-* **`--allowed-client` pointe vers un binaire modifiable par l'utilisateur.** Le chemin
-  autorisé (`…/Nox.app/Contents/MacOS/nox`) est dans un dossier que l'utilisateur
-  administrateur peut modifier : remplacer ce binaire suffit pour se faire accepter par
-  le helper. L'impact est borné par construction : la seule action exposée est
-  `pmset -a disablesleep 1|0`, sous bail, avec les gardes batterie (plancher 5 %) et
-  thermique du helper. Aucune commande arbitraire, aucun autre réglage, et pas de
-  lecture ni d'écriture de fichier choisi par le client. Le code root exécuté vient
-  toujours de la copie vérifiée dans `/Library/PrivilegedHelperTools`, jamais du bundle.
-* **Changement de session (Fast User Switching).** Le bail est conservé. Le nouvel
-  utilisateur console ne peut pas le prendre (`busy`) tant que le propriétaire est
-  connecté. Si le propriétaire cesse ses heartbeats, le helper restaure à l'expiration
-  du bail.
-* **Une valeur `1` posée par l'utilisateur pendant que Nox tient un bail** est
-  indiscernable de celle de Nox : elle sera ramenée à `0` à la fin du bail. En revanche,
-  une valeur `0` posée pendant le bail est respectée, puisque le helper révoque le bail.
-* **Garde thermique :** si la pression thermique atteint *heavy* (calcul lourd, capot
-  ouvert), la veille capot fermé est rétablie et la session s'arrête (`StopReason::Thermal`).
-  C'est volontaire.
-* **Sommeil forcé :** pendant un bail, `SleepDisabled` bloque aussi la veille demandée
-  depuis le menu Pomme. C'est le comportement de macOS.
-* **Bail court :** le protocole accepte un bail de 5 s minimum (pour les tests), mais le
-  helper exécute `pmset` sur son unique thread (jusqu'à environ 18 s dans le pire cas).
-  Un client réel doit garder un bail nettement plus long : Nox utilise 60 s avec un
-  heartbeat toutes les 15 s.
-* **Délai de grâce de 60 s :** après un crash, la veille capot fermé reste désactivée
-  jusqu'à 60 s, sauf si Nox est relancé avant.
+Sans le dépôt, `sudo rm -f /etc/sudoers.d/nox-lid-sleep` suffit pour la règle.
 
 ## 8. À tester physiquement (par l'utilisateur)
 
-1. Construire `dist/Nox.app` et l'installer dans `/Applications`. Cliquer « Installer
-   l'assistant », saisir le mot de passe, puis vérifier :
-   `sudo launchctl print system/io.github.martingaltier.nox.helper | grep state` et
-   `ls -l /var/run/io.github.martingaltier.nox.helper.sock`.
-2. Mode capot fermé, 15 min, sur secteur sans écran externe. Contrôler :
-   `pmset -g | grep SleepDisabled` doit afficher `1`, et
-   `ioreg -r -n IOPMrootDomain -d1 -l | grep SleepDisabled` doit afficher `Yes`. Fermer le
-   capot 2 min avec par exemple `ping` vers le Mac depuis un autre appareil : il doit
-   rester joignable.
-3. Arrêt manuel, puis `pmset -g | grep SleepDisabled` : aucune ligne.
-4. Pendant une session : `kill -9 $(pgrep -x nox)`, attendre 70 s, puis vérifier que la
-   ligne SleepDisabled a disparu.
-5. Pendant une session, capot fermé, débrancher le Mac avec un seuil supérieur à la
-   charge : il doit se mettre en veille sous ≤ 10 s environ.
-6. `sudo pmset -a disablesleep 1` **avant** de lancer une session, puis arrêter la
-   session : la valeur doit rester à `1` (Nox ne l'a pas touchée). Remettre ensuite `0`.
-7. Pendant une session, redémarrer le Mac : au retour, aucune ligne SleepDisabled.
-8. Désinstaller depuis l'app, puis vérifier que les deux fichiers ont disparu.
+Rien de ce qui touche `pmset` n'a été exécuté par l'agent. À faire sur le Mac réel, sur
+secteur, sans écran externe :
+
+1. Construire `dist/Nox.app` (`scripts/build-app.sh`), l'installer dans `/Applications`,
+   ouvrir Nox, choisir « Mac actif capot fermé » puis « Autoriser » et saisir le mot de passe.
+   Vérifier : `sudo -n -l /usr/bin/pmset -a disablesleep 1` retourne 0, et
+   `cat /etc/sudoers.d/nox-lid-sleep` affiche la ligne `#<uid> ALL=(root) …`.
+   Vérifier que `~/Library/LaunchAgents/io.github.martingaltier.nox.lid-restore.plist` existe.
+2. Démarrer une session capot fermé de 15 min. Pendant ce temps, `pmset -g | grep SleepDisabled`
+   doit afficher `1`, et `ioreg -r -n IOPMrootDomain -d1 -l | grep SleepDisabled` doit afficher
+   `Yes`. Fermer le capot 2 min, depuis un autre appareil un `ping` doit passer.
+3. Arrêter la session : `pmset -g | grep SleepDisabled` ne doit rien afficher.
+4. Pendant une session : `kill -9 $(pgrep -x nox)`. Vérifier que `pgrep -f "lid-guard"` ne
+   trouve plus rien après une dizaine de secondes, et que la ligne `SleepDisabled` a disparu.
+5. Pendant une session, capot fermé, débrancher avec un seuil supérieur à la charge : le Mac doit
+   se mettre en veille sous ~10 s ; Nox doit annoncer « Batterie sous le seuil ».
+6. `sudo pmset -a disablesleep 1` **avant** une session, puis arrêter la session : la valeur
+   doit rester à `1`. Remettre ensuite `0`.
+7. Pendant une session, redémarrer le Mac : au retour, aucune ligne `SleepDisabled`.
+8. Retirer l'autorisation depuis Nox : la règle et le LaunchAgent doivent disparaître.
+9. Une fois, installer une version qui contient l'ancien helper (`/Library/LaunchDaemons/io.github.martingaltier.nox.helper.plist`) et vérifier qu'il est retiré avec la nouvelle autorisation.

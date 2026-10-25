@@ -16,7 +16,7 @@ export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct 2>/dev/
 flags=(--target "$TARGET" --locked)
 [[ "$PROFILE" == release ]] && flags+=(--release)
 echo "==> cargo build ($PROFILE, $TARGET)"
-cargo build "${flags[@]}" -p nox-app -p nox-helper
+cargo build "${flags[@]}" -p nox-app
 # Optional cdylibs/binaries contributed by modules (built if the package exists).
 for extra in nox-nowplaying; do
   if cargo metadata --no-deps --format-version 1 | grep -q "\"name\":\"$extra\""; then
@@ -28,11 +28,10 @@ OUT="$TARGET_DIR/$TARGET/$PROFILE"
 
 echo "==> assembling $APP"
 rm -rf "$APP"
-mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/Library/LaunchServices"
+mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 sed -e "s/__VERSION__/$VERSION/" -e "s/__BUILD__/$BUILD/" packaging/Info.plist > "$APP/Contents/Info.plist"
 printf 'APPL????' > "$APP/Contents/PkgInfo"
 cp "$OUT/nox" "$APP/Contents/MacOS/nox"
-cp "$OUT/nox-helper" "$APP/Contents/Library/LaunchServices/nox-helper"
 [[ -f "$OUT/libnox_nowplaying.dylib" ]] && cp "$OUT/libnox_nowplaying.dylib" "$APP/Contents/Resources/"
 if compgen -G "packaging/resources/*" > /dev/null; then cp -R packaging/resources/. "$APP/Contents/Resources/"; fi
 [[ -f packaging/AppIcon.icns ]] && cp packaging/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
@@ -42,7 +41,6 @@ IDENTITY="${NOX_SIGN_IDENTITY:--}"
 echo "==> codesign (identity: $IDENTITY)"
 sign_opts=(--force --timestamp=none --options runtime)
 [[ "$IDENTITY" != "-" ]] && sign_opts=(--force --timestamp --options runtime)
-codesign "${sign_opts[@]}" -s "$IDENTITY" -i io.github.martingaltier.nox.helper "$APP/Contents/Library/LaunchServices/nox-helper"
 [[ -f "$APP/Contents/Resources/libnox_nowplaying.dylib" ]] && codesign "${sign_opts[@]}" -s "$IDENTITY" "$APP/Contents/Resources/libnox_nowplaying.dylib"
 codesign "${sign_opts[@]}" -s "$IDENTITY" --entitlements packaging/entitlements.plist "$APP"
 codesign --verify --strict --verbose=2 "$APP"

@@ -202,14 +202,14 @@ fn build(a: &App, menu: &NSMenu, targets: &mut Vec<Retained<ActionTarget>>) {
                 KeepAwakeMode::ClosedLid,
             ] {
                 let sub = NSMenu::new(mtm);
-                if mode.needs_helper() && !p.helper.usable() {
-                    info(&sub, p.helper.label_fr());
-                    let label = if p.helper_busy {
+                if mode.needs_helper() && !p.lid_rule.usable() {
+                    info(&sub, p.lid_rule.label_fr());
+                    let label = if p.rule_busy {
                         "Installation en cours…"
                     } else {
-                        crate::views::system::helper_button(p.helper)
+                        crate::views::system::helper_button(p.lid_rule)
                     };
-                    add(&sub, targets, label, "", !p.helper_busy, |a| {
+                    add(&sub, targets, label, "", !p.rule_busy, |a| {
                         super::alerts::install_helper(a)
                     });
                 } else {

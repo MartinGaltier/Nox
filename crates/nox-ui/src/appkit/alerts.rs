@@ -33,25 +33,27 @@ pub fn confirm(mtm: MainThreadMarker, title: &str, detail: &str) -> bool {
     a.runModal() == NSAlertFirstButtonReturn
 }
 
-/// Explains what the closed-lid helper does before asking macOS for the
+/// Explains what the closed-lid permission does before asking macOS for the
 /// administrator password (once). Nothing happens without explicit consent.
 pub fn install_helper(app: &App) {
     let mtm = app.mtm;
     let a = NSAlert::new(mtm);
     a.setMessageText(&NSString::from_str(
-        "Installer l’assistant « capot fermé » ?",
+        "Autoriser le mode « Mac actif capot fermé » ?",
     ));
     a.setInformativeText(&NSString::from_str(
-        "Pour garder le Mac éveillé capot fermé sans écran externe, macOS exige un réglage \
-         système (veille capot désactivée) que seul un administrateur peut changer.\n\n\
-         Nox installe pour cela un petit assistant (launchd) qui ne sait faire que deux choses : \
-         désactiver cette veille pendant une session demandée par vous, puis la restaurer — \
-         y compris après un plantage ou un redémarrage.\n\n\
-         macOS va vous demander votre mot de passe une seule fois. Il n’est jamais vu ni \
-         stocké par Nox, et aucun fichier sudoers n’est modifié. Vous pourrez désinstaller \
-         l’assistant depuis les Réglages.",
+        "Pour garder le Mac éveillé capot fermé sans écran externe, macOS exige le réglage \
+         « veille capot désactivée », que seul un administrateur peut changer.\n\n\
+         Nox installe pour cela une règle sudo limitée à deux commandes : \
+         /usr/bin/pmset -a disablesleep 1 et … 0, pour votre compte uniquement. Nox ne peut \
+         rien faire d’autre avec sudo. Pendant une session, Nox l’active ; à la fin, à l’arrêt \
+         ou après un plantage, la veille est rétablie, y compris après un redémarrage (un agent \
+         de session léger s’en charge).\n\n\
+         macOS va vous demander votre mot de passe une seule fois. Nox ne le voit ni ne le \
+         stocke. Si un ancien assistant root de Nox est présent, il sera retiré dans le même \
+         passage. Vous pourrez retirer l’autorisation depuis les Réglages.",
     ));
-    a.addButtonWithTitle(&NSString::from_str("Installer…"));
+    a.addButtonWithTitle(&NSString::from_str("Autoriser…"));
     a.addButtonWithTitle(&NSString::from_str("Annuler"));
     activate(mtm);
     if a.runModal() == NSAlertFirstButtonReturn {
