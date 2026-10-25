@@ -67,3 +67,31 @@ Build release (`scripts/build-app.sh`, arm64, ad hoc, 7,7 Mo), réglages par dé
 - Bloqué : A18 (îlot sur l'écran verrouillé : API privée SkyLight non retenue) ; resets « bancaires »
   Codex (connus du seul serveur de l'app Codex) ; Concentration/Ne pas déranger (pas d'API publique).
 - Signature : ad hoc, non notarisée (aucune identité Developer ID disponible).
+
+### Fluidité de l'îlot et coût au repos — 2026-10-25, `main` 4833f3f
+
+Mesures des agents `anim`, `render`, `idle` (build optimisé avec le pilote de survol
+debug-only `NOX_UI_HOVER`, 30 cycles, `NOX_PERF=1` ; le pilote est absent du build livré,
+vérifié par `strings`).
+
+| Mesure | Avant | Après |
+|---|---|---|
+| Durée d'ouverture | ≈ 1,07 s | ≈ 0,3 s |
+| Intervalle entre images | NSTimer 120 Hz non synchronisé, p50 8,3 ms, max 37 ms | CADisplayLink, 16,67 ms stables |
+| Travail main-thread par image pendant le fondu | p50 ≈ 2,9 ms, p95 ≈ 5,2 ms, max 11,3 ms | p50 0,15 ms, p95 0,42 ms, max 0,55 ms |
+| Redessins du texte pendant le fondu | 1 par image | 0 (4 dessins de contenu sur 30 cycles) |
+| Première image de la page | jusqu'à 15,6 ms (pic de décodage de pochette 80 ms) | p50 0,52 ms, p95 0,68 ms |
+| Centrage | ≤ 0,5 pt, variable selon l'historique | ≤ 0,25 pt par construction (fenêtre fixe) |
+| Réveils d'interruption au repos | ≈ 20/s | ≈ 2,7/s |
+| Réveils du main thread au repos | ≈ 1,1/s | ≈ 0,5/s |
+
+Causes trouvées : minuteur non synchronisé, fenêtre redimensionnée pendant l'animation,
+symboles SF rastérisés à chaque dessin (≈ 2,3 ms/image), opacité fractionnaire sur le texte
+(≈ 10×), mise en page à la largeur animée ; modules qui se réveillaient en boucle (250 ms–2 s).
+
+Vérification release (`main` fd3f3e0, réglages par défaut, données isolées) : thread principal
+2256/2256 échantillons dans `-[NSApplication run]`, arrêt propre.
+
+**Non vérifié avec de vrais événements** (Accessibilité non accordée au terminal) : survol,
+réentrée par la zone chaude, clics dans la barre des menus à côté de l'encoche, focus clavier,
+centrage à l'écran. Test manuel fourni : `scratchpad/manual/check.sh` (voir rapport).
