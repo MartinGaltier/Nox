@@ -1,10 +1,13 @@
 //! Display list produced by the (pure) layout code and executed by the
 //! AppKit painter. Hit regions map clicks to [`Action`]s.
 
-use crate::geom::{Color, Point, Rect};
+use crate::geom::{Color, Point, Rect, Size};
 use nox_core::Command;
 use nox_core::Section;
 use nox_core::model::watch::WatchTrigger;
+use std::collections::hash_map::DefaultHasher;
+use std::fmt::{self, Write as _};
+use std::hash::Hasher;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Weight {
@@ -264,6 +267,71 @@ pub fn op_bounds(op: &Op) -> Option<Rect> {
     }
 }
 
+/// One layer of the island's content, laid out for its own target size (the
+/// size of the surface it belongs to), never for the animated size.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct Group {
+    /// Never contains [`Op::Alpha`]: the fade is the layer's opacity.
+    pub ops: Vec<Op>,
+    /// Hit regions in the group's own coordinates (its target space).
+    pub hits: Vec<Hit>,
+    /// The shape size the group was laid out for.
+    pub target: Size,
+    /// Global x (as [`NotchGeometry::shape_x`]) of the group's local origin; y is 0.
+    pub origin: Point,
+    /// Changes exactly when `ops`, `target` or `origin` change: equal
+    /// generations mean there is nothing new to draw.
+    pub generation: u64,
+}
+
+impl Group {
+    pub fn new(scene: Scene, target: Size, origin: Point) -> Self {
+        let _p = crate::perf::Probe::new("generation");
+        let mut hasher = DefaultHasher::new();
+        // The Debug text of every field that is drawn; no allocation for the
+        // whole text (it streams into the hasher).
+        let _ = write!(
+            HashWriter(&mut hasher),
+            "{:?}{target:?}{origin:?}",
+            scene.ops
+        );
+        Self {
+            ops: scene.ops,
+            hits: scene.hits,
+            target,
+            origin,
+            generation: hasher.finish(),
+        }
+    }
+}
+
+/// Streams formatted text into a hasher.
+struct HashWriter<'a>(&'a mut DefaultHasher);
+
+impl fmt::Write for HashWriter<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0.write(s.as_bytes());
+        Ok(())
+    }
+}
+
+/// The island's content as separate layers, so the fade between closed and
+/// open content can be a layer opacity instead of a redraw.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct LayeredScene {
+    /// Current animated size of the shape (drawn by the caller).
+    pub silhouette: Size,
+    /// Content of the surface shown while closed (empty when expanded).
+    pub closed: Group,
+    /// Content of the expanded page (empty while fully closed).
+    pub page: Group,
+    /// Redraw again after this many seconds, if any.
+    pub refresh: Option<f64>,
+    pub shows_metrics: bool,
+    pub shows_camera: bool,
+    pub scroll_extent: f64,
+}
+
 /// What must be redrawn to go from `old` to `new`.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Damage {
@@ -421,5 +489,35 @@ mod tests {
         assert_eq!(s.refresh, Some(0.5));
         s.text(Rect::default(), "", TextStyle::new(10.0));
         assert!(s.ops.is_empty(), "empty strings are skipped");
+    }
+
+    #[test]
+    fn group_generation_follows_colour_size_and_text() {
+        let target = Size::new(520.0, 200.0);
+        let origin = Point::new(475.0, 0.0);
+        let group = |scene: Scene, target: Size| Group::new(scene, target, origin);
+        let base = |color: Color, w: f64, text: &str| {
+            let mut s = Scene::default();
+            s.fill(Rect::new(0.0, 0.0, w, 20.0), 4.0, color);
+            s.text(Rect::new(0.0, 0.0, 80.0, 16.0), text, TextStyle::new(13.0));
+            s
+        };
+        let a = group(base(Color::ACCENT, 40.0, "Lecture"), target);
+        assert_eq!(
+            a.generation,
+            group(base(Color::ACCENT, 40.0, "Lecture"), target).generation,
+            "same content, same generation"
+        );
+        for other in [
+            group(base(Color::WHITE, 40.0, "Lecture"), target),
+            group(base(Color::ACCENT, 41.0, "Lecture"), target),
+            group(base(Color::ACCENT, 40.0, "Pause"), target),
+            group(
+                base(Color::ACCENT, 40.0, "Lecture"),
+                Size::new(521.0, 200.0),
+            ),
+        ] {
+            assert_ne!(a.generation, other.generation);
+        }
     }
 }
