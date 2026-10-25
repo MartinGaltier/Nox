@@ -210,6 +210,20 @@ fn perform(action: &QuickAction, token: &CancelToken) -> Result<String, String> 
     }
 }
 
+/// Applies a control change and publishes only if a control really moved:
+/// notifications that leave every value as it was do not wake the UI.
+fn publish_if_changed(
+    hub: &Hub,
+    state: &mut ShortcutsState,
+    on_change: impl Fn(&mut ShortcutsState),
+) {
+    let before = state.controls.clone();
+    on_change(state);
+    if state.controls != before {
+        publish(hub, state);
+    }
+}
+
 fn publish(hub: &Hub, state: &ShortcutsState) {
     let s = state.clone();
     hub.update(move |st| {
@@ -340,6 +354,9 @@ fn run(hub: Hub, rx: Receiver<ShortcutCommand>, hud: Arc<AtomicBool>, token: Can
     // Brightness has no public notification; DisplayServices' private one
     // feeds the HUD when present (registered on the main run loop).
     let (bright_tx, bright_rx) = crossbeam_channel::bounded(1);
+    // Keeps `bright_rx` connected when the observer is never created, so the
+    // select below cannot spin on a disconnected channel.
+    let _bright_keepalive = bright_tx.clone();
     let brightness_observer = crate::sys::on_main(crate::sys::MAIN_TIMEOUT, move || {
         display::BrightnessObserver::new(bright_tx)
     })
@@ -397,14 +414,11 @@ fn run(hub: Hub, rx: Receiver<ShortcutCommand>, hud: Arc<AtomicBool>, token: Can
                     drop(listeners.take());
                     listeners = Some(audio::Listeners::new(audio_tx.clone()));
                 }
-                on_change(&mut state);
-                publish(&hub, &state);
+                publish_if_changed(&hub, &mut state, on_change);
             },
             recv(bright_rx) -> _ => {
-                on_change(&mut state);
-                publish(&hub, &state);
+                publish_if_changed(&hub, &mut state, on_change);
             },
-            default(Duration::from_millis(500)) => {},
         }
     }
     drop(listeners);
@@ -417,6 +431,36 @@ fn run(hub: Hub, rx: Receiver<ShortcutCommand>, hud: Arc<AtomicBool>, token: Can
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn unchanged_controls_do_not_wake_the_ui() {
+        let hub = Hub::new();
+        let wakes = Arc::new(AtomicUsize::new(0));
+        let w = wakes.clone();
+        hub.set_waker(move || {
+            w.fetch_add(1, Ordering::SeqCst);
+        });
+        hub.update(|s| s.shortcuts = Some(ShortcutsState::default()));
+        hub.acknowledge_wake();
+        let mut state = ShortcutsState::default();
+        let wakes_now = || wakes.load(Ordering::SeqCst);
+        let before = wakes_now();
+
+        // A notification that leaves every value as it was: nothing published.
+        publish_if_changed(&hub, &mut state, |_| {});
+        assert_eq!(wakes_now(), before);
+
+        // A control that moved: published once.
+        publish_if_changed(&hub, &mut state, |s| {
+            s.controls.volume = Reading::Measured(0.7);
+        });
+        assert_eq!(wakes_now(), before + 1);
+        assert!(matches!(
+            hub.read(|st| st.shortcuts.as_ref().map(|s| s.controls.volume.clone())),
+            Some(Reading::Measured(v)) if v == 0.7
+        ));
+    }
 
     #[test]
     fn hud_follows_the_control_that_changed() {

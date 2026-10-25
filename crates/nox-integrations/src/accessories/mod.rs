@@ -337,6 +337,7 @@ pub fn symbol(k: AccessoryKind) -> &'static str {
 
 fn run(hub: Hub, settings: Arc<Mutex<AccessorySettings>>, token: CancelToken) {
     let mut monitor = Monitor::default();
+    let mut last: Option<AccessoriesState> = None;
     while !token.is_cancelled() {
         // Class-level read: never prompts, never blocks.
         let perm = peripherals::bluetooth_permission();
@@ -360,11 +361,16 @@ fn run(hub: Hub, settings: Arc<Mutex<AccessorySettings>>, token: CancelToken) {
             bluetooth: perm,
             devices,
         };
-        hub.update(move |st| {
-            if st.accessories.is_some() {
-                st.accessories = Some(state);
-            }
-        });
+        // Publish (and wake the UI) only when something actually changed.
+        if last.as_ref() != Some(&state) {
+            let publish = state.clone();
+            hub.update(move |st| {
+                if st.accessories.is_some() {
+                    st.accessories = Some(publish);
+                }
+            });
+            last = Some(state);
+        }
         if token.sleep(POLL) {
             break;
         }

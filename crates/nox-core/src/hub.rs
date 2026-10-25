@@ -9,9 +9,10 @@ use crate::model::{
     metrics::MetricsState, music::MusicState, notifications::NotificationsState, power::PowerState,
     shortcuts::ShortcutsState, timers::TimersState, watch::WatchState,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, OnceLock, RwLock};
+use std::time::Duration;
 
 /// Everything the island can display. `None` = module not running.
 #[derive(Debug, Clone, Default)]
@@ -83,6 +84,7 @@ impl Hub {
             let mut s = self.inner.state.write().unwrap_or_else(|e| e.into_inner());
             f(&mut s);
         }
+        perf_count(std::thread::current().name().unwrap_or("unnamed"));
         self.inner.generation.fetch_add(1, Ordering::SeqCst);
         self.wake();
     }
@@ -136,6 +138,7 @@ impl Hub {
         if self.inner.wake_pending.swap(true, Ordering::SeqCst) {
             return;
         }
+        perf_count("wake");
         if let Some(w) = self
             .inner
             .waker
@@ -170,6 +173,33 @@ impl Hub {
             Some(sink) => sink(cmd),
             None => log::warn!("command dropped (no manager): {cmd:?}"),
         }
+    }
+}
+
+/// `NOX_PERF=1`: counts publications per publishing thread and real UI wake-ups
+/// (`wake`), printed to stderr every minute. Read once; off otherwise.
+fn perf_count(key: &str) {
+    static PERF: OnceLock<Option<Mutex<BTreeMap<String, u64>>>> = OnceLock::new();
+    let perf = PERF.get_or_init(|| {
+        if std::env::var_os("NOX_PERF").is_none_or(|v| v == "0") {
+            return None;
+        }
+        std::thread::spawn(|| {
+            loop {
+                std::thread::sleep(Duration::from_secs(60));
+                if let Some(m) = PERF.get().and_then(Option::as_ref) {
+                    let m = m.lock().unwrap_or_else(|e| e.into_inner());
+                    eprintln!("nox-perf {m:?}");
+                }
+            }
+        });
+        Some(Mutex::new(BTreeMap::new()))
+    });
+    if let Some(m) = perf {
+        *m.lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .entry(key.to_owned())
+            .or_default() += 1;
     }
 }
 
