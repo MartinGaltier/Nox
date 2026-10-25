@@ -549,6 +549,15 @@ impl App {
             let scene = i
                 .model
                 .scene(&i.state, &i.settings, nox_core::model::now(), hover);
+            {
+                // Covers, symbols and text attributes are made here, before a
+                // transition needs them, not in its first draw.
+                let Inner {
+                    painter, artwork, ..
+                } = &mut *i;
+                let art = |id: u64| artwork.get(&id).cloned();
+                painter.prepare(&scene, &art);
+            }
             let r = (
                 scene.shows_metrics,
                 scene.shows_camera,

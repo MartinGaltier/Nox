@@ -60,6 +60,17 @@ fn record(stage: &'static str, d: Duration) {
     }
 }
 
+/// Takes every sample recorded so far (for benchmarks), in microseconds.
+pub fn drain() -> Vec<(&'static str, Vec<f64>)> {
+    let Ok(mut stages) = STAGES.lock() else {
+        return Vec::new();
+    };
+    stages
+        .iter_mut()
+        .map(|(name, s)| (*name, std::mem::take(&mut s.samples)))
+        .collect()
+}
+
 /// (p50, p95, max) of the samples; sorts them in place.
 pub fn summary(samples: &mut [f64]) -> (f64, f64, f64) {
     if samples.is_empty() {
