@@ -1143,6 +1143,7 @@ impl App {
         }
         (self.on_settings_changed)(s.clone());
         configure_panel(&self.panel, &self.view, &s);
+        self.hot_panel.setSharingType(sharing_type(&s));
         self.apply_hotkey();
         self.screens_changed();
     }
@@ -1273,6 +1274,15 @@ impl App {
     }
 }
 
+/// Excluded from screen captures when the settings ask for it.
+fn sharing_type(s: &Settings) -> NSWindowSharingType {
+    if s.island.hide_in_captures {
+        NSWindowSharingType::None
+    } else {
+        NSWindowSharingType::ReadOnly
+    }
+}
+
 /// The hot zone window: same level and spaces as the island, never shadowed.
 fn configure_hot_panel(panel: &HotZonePanel, view: &HotZoneView, s: &Settings) {
     panel.setOpaque(false);
@@ -1289,11 +1299,7 @@ fn configure_hot_panel(panel: &HotZonePanel, view: &HotZoneView, s: &Settings) {
     // SAFETY: the panel is owned by the controller; it must not free itself.
     unsafe { panel.setReleasedWhenClosed(false) };
     panel.setMovable(false);
-    panel.setSharingType(if s.island.hide_in_captures {
-        NSWindowSharingType::None
-    } else {
-        NSWindowSharingType::ReadOnly
-    });
+    panel.setSharingType(sharing_type(s));
     panel.setContentView(Some(view));
 }
 
@@ -1313,11 +1319,7 @@ fn configure_panel(panel: &IslandPanel, view: &IslandView, s: &Settings) {
     // SAFETY: the panel is owned by the controller; it must not free itself.
     unsafe { panel.setReleasedWhenClosed(false) };
     panel.setMovable(false);
-    panel.setSharingType(if s.island.hide_in_captures {
-        NSWindowSharingType::None
-    } else {
-        NSWindowSharingType::ReadOnly
-    });
+    panel.setSharingType(sharing_type(s));
     if let Some(dark) = objc2_app_kit::NSAppearance::appearanceNamed(
         // SAFETY: static appearance name provided by AppKit.
         unsafe { objc2_app_kit::NSAppearanceNameDarkAqua },
