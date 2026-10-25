@@ -3,17 +3,20 @@
 //! Music (B1–B10): Now Playing via the perl-hosted adapter, commands,
 //! shuffle/repeat/queue via AppleScript, LRCLIB lyrics, track-change alert.
 //!
-//! Visualiser (B7): real levels would need a Core Audio process tap and the
-//! "System Audio Recording" permission (NSAudioCaptureUsageDescription), a
-//! prompt that records all system audio — too intrusive for an equaliser.
-//! `levels` stays empty with `levels_measured = false`; the UI animates from
-//! `now_playing.playing`.
+//! Visualiser (B7): opt-in real levels (`live_levels`) from a Core Audio tap
+//! on the player, only while a track plays and the music page is visible
+//! (see `levels` and docs/AUDIO.md). Otherwise `levels` stays empty with
+//! `levels_measured = false` and the UI animates from `now_playing.playing`.
 
 pub mod adapter;
 pub mod artwork;
 pub mod automation;
+mod levels;
 pub mod lrc;
 pub mod lyrics;
+
+use levels::{Block, Gate};
+use nox_audio::{LevelMeter, MeterConfig, MeterEvent};
 
 use crate::sys::applescript::ScriptError;
 use crate::sys::{applescript, workspace};
@@ -238,12 +241,28 @@ struct Engine {
     results: Receiver<JobResult>,
     results_tx: Sender<JobResult>,
     side: Option<Worker>,
+    /// B7: the running live meter (at most one), its generation, and the
+    /// channel its thread reports to; events of a stopped meter are ignored.
+    meter: Option<Running>,
+    meter_gen: u64,
+    meter_tx: Sender<(u64, MeterEvent)>,
+    meter_rx: Receiver<(u64, MeterEvent)>,
+    meter_block: Block,
+    /// The music page is on screen (`MusicCommand::Visible`).
+    visible: bool,
+}
+
+struct Running {
+    id: u64,
+    pid: i32,
+    meter: LevelMeter,
 }
 
 impl Engine {
     fn new(hub: Hub, settings: MusicSettings) -> Self {
         let (events_tx, events_rx) = unbounded();
         let (results_tx, results) = unbounded();
+        let (meter_tx, meter_rx) = unbounded();
         Self {
             hub,
             state: initial_state(&settings),
@@ -267,6 +286,12 @@ impl Engine {
             results,
             results_tx,
             side: None,
+            meter: None,
+            meter_gen: 0,
+            meter_tx,
+            meter_rx,
+            meter_block: Block::default(),
+            visible: false,
         }
     }
 
@@ -346,10 +371,13 @@ impl Engine {
                     Err(_) => break,
                 },
                 recv(self.results) -> r => if let Ok(r) = r { self.on_result(r) },
+                recv(self.meter_rx) -> ev => if let Ok((id, ev)) = ev { self.on_level(id, ev) },
                 default(tick) => {},
             }
             self.on_tick();
+            self.sync_levels();
         }
+        self.stop_meter();
         if let Some(mut a) = self.adapter.take() {
             a.shutdown();
         }
@@ -714,8 +742,7 @@ impl Engine {
                 lyrics::clear_cache(&lyrics::cache_dir());
                 artwork::clear_cache(&artwork::cache_dir());
             }
-            // Live levels (nox-audio, B7) are wired by Agent Intégrations.
-            MusicCommand::Visible(_) => {}
+            MusicCommand::Visible(visible) => self.visible = visible,
             MusicCommand::OpenPlayer => {
                 let pid = self.last_line.as_ref().and_then(|l| l.pid);
                 let bundle = self
@@ -726,6 +753,88 @@ impl Engine {
                 self.submit(Job::Open(pid, bundle));
             }
         }
+    }
+
+    /// Starts or stops the live meter so that it runs exactly when
+    /// `levels::target` says so. Called after every step: no tap survives a
+    /// closed gate.
+    fn sync_levels(&mut self) {
+        let gate = Gate {
+            enabled: self.settings.live_levels,
+            playing: self.state.now_playing.as_ref().is_some_and(|n| n.playing),
+            visible: self.visible,
+            pid: self.last_line.as_ref().and_then(|l| l.pid),
+        };
+        let target = levels::target(gate, self.meter_block);
+        if self.meter.as_ref().map(|m| m.pid) == target {
+            return;
+        }
+        self.stop_meter();
+        if let Some(pid) = target {
+            self.start_meter(pid);
+        }
+    }
+
+    fn start_meter(&mut self, pid: i32) {
+        self.meter_gen += 1;
+        let id = self.meter_gen;
+        let tx = self.meter_tx.clone();
+        // Creating the tap may show the system prompt the first time; the
+        // user has enabled live levels to get here.
+        match LevelMeter::start(pid, MeterConfig::default(), move |ev| {
+            let _ = tx.send((id, ev));
+        }) {
+            Ok(meter) => self.meter = Some(Running { id, pid, meter }),
+            Err(e) => {
+                log::warn!("music: live levels not started: {e}");
+                self.meter_block.failed_pid = Some(pid);
+            }
+        }
+    }
+
+    /// Stops the meter (joins its thread, which destroys the tap) and clears
+    /// the levels, so the UI goes back to the animation.
+    fn stop_meter(&mut self) {
+        if let Some(mut running) = self.meter.take() {
+            running.meter.stop();
+        }
+        if self.state.levels_measured || !self.state.levels.is_empty() {
+            self.state.levels.clear();
+            self.state.levels_measured = false;
+            self.publish();
+        }
+    }
+
+    fn on_level(&mut self, id: u64, event: MeterEvent) {
+        let Some(pid) = self.meter.as_ref().filter(|m| m.id == id).map(|m| m.pid) else {
+            return;
+        };
+        match event {
+            MeterEvent::Levels(bands) => {
+                self.state.levels = bands.to_vec();
+                self.state.levels_measured = true;
+                self.publish_levels();
+            }
+            other => {
+                log::info!("music: live levels stopped: {other:?}");
+                self.meter_block = levels::after_event(self.meter_block, pid, &other);
+                self.state.levels_refused = self.meter_block.refused;
+                self.stop_meter();
+                self.publish();
+            }
+        }
+    }
+
+    /// Levels only, cheap: the meter emits at most 30 times a second (its
+    /// default `updates_per_sec`), and only when the bands change.
+    fn publish_levels(&self) {
+        let (levels, measured) = (self.state.levels.clone(), self.state.levels_measured);
+        self.hub.update(move |st| {
+            if let Some(m) = st.music.as_mut() {
+                m.levels = levels;
+                m.levels_measured = measured;
+            }
+        });
     }
 
     fn on_settings(&mut self, s: MusicSettings) {
@@ -743,7 +852,12 @@ impl Engine {
             || s.lyrics_online != self.settings.lyrics_online
             || s.queue != self.settings.queue
             || s.include_other_players != self.settings.include_other_players;
+        let was_enabled = self.settings.live_levels;
         self.settings = s;
+        self.meter_block =
+            levels::after_settings(self.meter_block, was_enabled, self.settings.live_levels);
+        self.state.levels_refused = self.meter_block.refused;
+        self.sync_levels();
         if artwork_enabled {
             self.art_check_at = Some(Instant::now());
         }

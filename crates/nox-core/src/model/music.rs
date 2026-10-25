@@ -92,6 +92,11 @@ pub struct MusicState {
     pub levels: Vec<f32>,
     /// Whether `levels` comes from real audio or a playback-driven animation.
     pub levels_measured: bool,
+    /// Live levels were started but only silence arrived: the "System Audio
+    /// Recording" permission is probably refused. Cleared when the user
+    /// switches `live_levels` off and on again.
+    #[serde(default)]
+    pub levels_refused: bool,
     /// Every player currently publishing a track (the followed one included),
     /// for a source picker; `now_playing.player` is the followed one.
     pub players: Vec<PlayerInfo>,
