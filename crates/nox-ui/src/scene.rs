@@ -286,6 +286,7 @@ pub struct Group {
 
 impl Group {
     pub fn new(scene: Scene, target: Size, origin: Point) -> Self {
+        let _p = crate::perf::Probe::new("generation");
         let mut hasher = DefaultHasher::new();
         // The Debug text of every field that is drawn; no allocation for the
         // whole text (it streams into the hasher).
@@ -488,5 +489,35 @@ mod tests {
         assert_eq!(s.refresh, Some(0.5));
         s.text(Rect::default(), "", TextStyle::new(10.0));
         assert!(s.ops.is_empty(), "empty strings are skipped");
+    }
+
+    #[test]
+    fn group_generation_follows_colour_size_and_text() {
+        let target = Size::new(520.0, 200.0);
+        let origin = Point::new(475.0, 0.0);
+        let group = |scene: Scene, target: Size| Group::new(scene, target, origin);
+        let base = |color: Color, w: f64, text: &str| {
+            let mut s = Scene::default();
+            s.fill(Rect::new(0.0, 0.0, w, 20.0), 4.0, color);
+            s.text(Rect::new(0.0, 0.0, 80.0, 16.0), text, TextStyle::new(13.0));
+            s
+        };
+        let a = group(base(Color::ACCENT, 40.0, "Lecture"), target);
+        assert_eq!(
+            a.generation,
+            group(base(Color::ACCENT, 40.0, "Lecture"), target).generation,
+            "same content, same generation"
+        );
+        for other in [
+            group(base(Color::WHITE, 40.0, "Lecture"), target),
+            group(base(Color::ACCENT, 41.0, "Lecture"), target),
+            group(base(Color::ACCENT, 40.0, "Pause"), target),
+            group(
+                base(Color::ACCENT, 40.0, "Lecture"),
+                Size::new(521.0, 200.0),
+            ),
+        ] {
+            assert_ne!(a.generation, other.generation);
+        }
     }
 }
