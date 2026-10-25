@@ -138,20 +138,22 @@ impl NotchGeometry {
         )
     }
 
-    /// Panel frame (AppKit global space) for a surface of `size`, hanging from
-    /// the top edge and centred on the camera.
-    pub fn panel_frame(&self, size: Size) -> Rect {
-        let x = (self.center_x - size.w / 2.0).round();
+    /// Fixed panel frame (AppKit global space) holding the largest island
+    /// `max` for the whole session: hangs from the top edge and is centred
+    /// on the camera with whole points, so it never moves while animating.
+    pub fn window_frame(&self, max: Size) -> Rect {
+        let x = (self.center_x - max.w / 2.0).round();
         let x = x.clamp(
             self.screen.x,
-            (self.screen.max_x() - size.w).max(self.screen.x),
+            (self.screen.max_x() - max.w).max(self.screen.x),
         );
-        Rect::new(
-            x,
-            self.screen.max_y() - size.h.ceil(),
-            size.w.ceil(),
-            size.h.ceil(),
-        )
+        Rect::new(x, self.screen.max_y() - max.h, max.w, max.h)
+    }
+
+    /// Left edge of a shape `width` wide, centred on the camera and snapped to
+    /// half points (a whole pixel on 2x displays), in AppKit global space.
+    pub fn shape_x(&self, width: f64) -> f64 {
+        ((self.center_x - width / 2.0) * 2.0).round() / 2.0
     }
 
     /// Rect of the camera housing in a view of width `view_w` (flipped).
@@ -350,10 +352,13 @@ mod tests {
         assert_eq!(g.camera_height, 32.0);
         assert_eq!(g.center_x, 735.0);
         assert_eq!(g.floating_gap, None, "a real notch never floats");
-        let f = g.panel_frame(g.compact_size(0.0));
+        let f = g.window_frame(Size::new(185.0, 32.0));
         assert_eq!(f, Rect::new(643.0, 924.0, 185.0, 32.0));
         // Hangs flush with the top edge.
         assert_eq!(f.max_y(), 956.0);
+        // Centred on 735: 642.5 is already a half point.
+        assert_eq!(g.shape_x(185.0), 642.5);
+        assert_eq!(g.shape_x(186.0), 642.0);
     }
 
     #[test]

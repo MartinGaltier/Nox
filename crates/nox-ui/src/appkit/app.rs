@@ -4,7 +4,7 @@
 
 use super::island_window::{IslandPanel, IslandView};
 use super::painter::Painter;
-use super::util::{Observer, Timer, mono, ns_rect};
+use super::util::{ActionTarget, Observer, Timer, mono, ns_rect};
 use super::{files, haptics, screens};
 use crate::UiContext;
 use crate::geom::{Point, Rect, Size};
@@ -13,24 +13,86 @@ use crate::gesture::{GestureAction, ScrollInput, movement};
 use crate::island::{IslandModel, Surface, machine_config};
 use crate::machine::Mode;
 use crate::scene::{Action, Scene};
+use block2::RcBlock;
 use nox_core::model::files::FileCommand;
 use nox_core::model::music::MusicCommand;
 use nox_core::model::watch::WatchCommand;
 use nox_core::{Command, Hub, IslandState, Section, Settings, SettingsStore};
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, msg_send};
 use objc2_app_kit::{
     NSAppearanceCustomization, NSApplicationDidChangeScreenParametersNotification, NSColor,
-    NSEvent, NSEventPhase, NSPasteboardTypeFileURL, NSWindowCollectionBehavior,
-    NSWindowSharingType, NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
-    NSWorkspaceDidActivateApplicationNotification,
+    NSEvent, NSEventMask, NSEventPhase, NSPasteboardTypeFileURL, NSView,
+    NSWindowCollectionBehavior, NSWindowSharingType, NSWorkspace,
+    NSWorkspaceActiveSpaceDidChangeNotification, NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2_core_graphics::CGContext;
-use objc2_foundation::{NSArray, NSNotificationCenter};
+use objc2_foundation::{NSArray, NSNotificationCenter, NSRunLoop, NSRunLoopCommonModes};
+use objc2_quartz_core::CADisplayLink;
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// Room around the largest island in the fixed window: shadow on each side,
+/// and below the island.
+const SHADOW_X: f64 = 24.0;
+const SHADOW_BOTTOM: f64 = 32.0;
+
+/// Size of the fixed panel: the largest island the settings allow, plus room
+/// for its shadow. Recomputed only when the screen or the settings change.
+fn window_size(geometry: &NotchGeometry, settings: &Settings) -> Size {
+    let e = geometry.expanded_size(&settings.island);
+    Size::new(e.w.ceil() + 2.0 * SHADOW_X, e.h.ceil() + SHADOW_BOTTOM)
+}
+
+fn union(a: Rect, b: Rect) -> Rect {
+    let x = a.x.min(b.x);
+    let y = a.y.min(b.y);
+    Rect::new(
+        x,
+        y,
+        a.max_x().max(b.max_x()) - x,
+        a.max_y().max(b.max_y()) - y,
+    )
+}
+
+/// Display-synchronised clock for the animation: a `CADisplayLink` from the
+/// view, so it follows the view's screen and refresh rate. It runs only while
+/// something animates and is invalidated when dropped.
+struct FrameClock {
+    link: Retained<CADisplayLink>,
+    _target: Retained<ActionTarget>,
+}
+
+impl FrameClock {
+    fn start(view: &NSView) -> Self {
+        let mtm = MainThreadMarker::new().expect("the animation clock runs on the main thread");
+        let target = ActionTarget::new(mtm, |_: &AnyObject| {
+            if let Some(a) = get() {
+                a.tick_animation();
+            }
+        });
+        // SAFETY: `ActionTarget::selector()` is `fire:`, which takes the link
+        // as its only argument, and the link retains the target.
+        let link =
+            unsafe { view.displayLinkWithTarget_selector(&target, ActionTarget::selector()) };
+        // SAFETY: the main run loop and its common modes are static Foundation values.
+        unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
+        Self {
+            link,
+            _target: target,
+        }
+    }
+}
+
+impl Drop for FrameClock {
+    fn drop(&mut self) {
+        self.link.invalidate();
+    }
+}
 
 thread_local! {
     static APP: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
@@ -78,11 +140,14 @@ struct Inner {
     painter: Painter,
     scene: Scene,
     hover: Option<Point>,
-    /// Shape offset inside the view (the window is the animation's bounding box).
+    /// Left edge of the shape inside the view (the window is fixed, see `fit_window`).
     offset: f64,
-    anim: Option<Timer>,
+    /// The fixed window frame, global AppKit coordinates.
+    frame: Rect,
+    /// Shape rectangle last drawn, in view coordinates: the dirty region.
+    drawn: Option<Rect>,
+    anim: Option<FrameClock>,
     last_tick: f64,
-    anim_box: Size,
     deadline: Option<Timer>,
     refresh: Option<Timer>,
     metrics_sent: Option<bool>,
@@ -117,6 +182,7 @@ pub struct App {
     pub monitor_window: RefCell<Option<super::monitor_window::MonitorWindow>>,
     pub overlay: RefCell<Option<super::overlay::SelectionOverlay>>,
     hotkey: RefCell<Option<super::hotkey::HotKey>>,
+    pointer_monitor: RefCell<Option<Retained<AnyObject>>>,
 }
 
 impl App {
@@ -150,10 +216,13 @@ impl App {
         );
         let model = IslandModel::new(geometry, &settings);
         let size = model.size();
-        let frame = geometry.panel_frame(size);
+        let frame = geometry.window_frame(window_size(&geometry, &settings));
+        let offset = geometry.shape_x(size.w) - frame.x;
         let panel = IslandPanel::new(mtm, ns_rect(frame));
         let view = IslandView::new(mtm, ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h)));
         configure_panel(&panel, &view, &settings);
+        // Clicks pass through until the pointer is over the shape.
+        panel.setIgnoresMouseEvents(true);
 
         let debug = DebugOptions::from_env();
         let app = Rc::new(App {
@@ -170,10 +239,11 @@ impl App {
                 painter: Painter::default(),
                 scene: Scene::default(),
                 hover: None,
-                offset: 0.0,
+                offset,
+                frame,
+                drawn: None,
                 anim: None,
                 last_tick: 0.0,
-                anim_box: size,
                 deadline: None,
                 refresh: None,
                 metrics_sent: None,
@@ -197,6 +267,7 @@ impl App {
             monitor_window: RefCell::new(None),
             overlay: RefCell::new(None),
             hotkey: RefCell::new(None),
+            pointer_monitor: RefCell::new(None),
         });
         APP.with(|a| *a.borrow_mut() = Some(app.clone()));
         app.after_install();
@@ -252,11 +323,23 @@ impl App {
                 i.model.machine.hold(true, mono());
             }
         }
+        // Global mouse movement re-enters the island while its window ignores
+        // clicks (mouse moves need no Accessibility permission).
+        let block = RcBlock::new(|_e: NonNull<NSEvent>| {
+            if let Some(a) = get() {
+                a.recheck_pointer();
+            }
+        });
+        let mask = NSEventMask::MouseMoved | NSEventMask::LeftMouseDragged;
+        *self.pointer_monitor.borrow_mut() =
+            NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block);
         self.panel.orderFrontRegardless();
         self.on_wake();
         self.update_fullscreen();
         #[cfg(debug_assertions)]
         super::snapshot::schedule(self);
+        #[cfg(debug_assertions)]
+        super::hover_probe::schedule(self);
     }
 
     #[cfg(debug_assertions)]
@@ -372,31 +455,25 @@ impl App {
         if animating {
             self.start_animation();
         } else {
-            self.apply_frame(true);
+            self.apply_frame();
         }
         self.relayout();
         self.schedule_deadline();
     }
 
     fn start_animation(&self) {
-        let mut i = self.inner.borrow_mut();
-        let target = Size::new(i.model.motion.w.target, i.model.motion.h.target);
-        let cur = i.model.size();
-        let b = i.anim_box;
-        i.anim_box = Size::new(b.w.max(target.w).max(cur.w), b.h.max(target.h).max(cur.h));
-        if i.anim.is_none() {
+        let idle = self.inner.borrow().anim.is_none();
+        if idle {
+            let clock = FrameClock::start(&self.view);
+            let mut i = self.inner.borrow_mut();
             i.last_tick = mono();
-            i.anim = Some(Timer::new(1.0 / 120.0, true, || {
-                if let Some(a) = get() {
-                    a.tick_animation();
-                }
-            }));
+            i.anim = Some(clock);
         }
-        drop(i);
-        self.apply_frame(false);
+        self.apply_frame();
     }
 
     fn tick_animation(&self) {
+        let _p = crate::perf::Probe::new("tick");
         let settled = {
             let mut i = self.inner.borrow_mut();
             let t = mono();
@@ -406,43 +483,46 @@ impl App {
             i.model.motion.settled()
         };
         if settled {
-            {
-                let mut i = self.inner.borrow_mut();
-                i.anim = None;
-                i.anim_box = i.model.size();
-            }
-            self.apply_frame(true);
+            // Dropping the clock invalidates the display link.
+            self.inner.borrow_mut().anim = None;
+        }
+        self.apply_frame();
+        if settled {
             self.panel.invalidateShadow();
             self.recheck_pointer();
         }
         self.relayout();
     }
 
-    /// Positions the panel. During an animation the window keeps the
-    /// bounding box of all sizes involved (two resizes per animation).
-    fn apply_frame(&self, settled: bool) {
-        let (frame, offset, expanded) = {
+    /// Places the shape for the size drawn now: its centre stays on the camera
+    /// at every frame, inside the fixed window (no window resize while animating).
+    fn apply_frame(&self) {
+        let expanded = {
             let mut i = self.inner.borrow_mut();
             let size = i.model.size();
-            let bx = if settled {
-                i.anim_box = size;
-                size
-            } else {
-                i.anim_box
-            };
-            let f = i.model.geometry.panel_frame(bx);
-            i.offset = (f.w - size.w) / 2.0;
-            (f, i.offset, i.model.motion.open.value > 0.5)
+            i.offset = i.model.geometry.shape_x(size.w) - i.frame.x;
+            i.model.motion.open.value > 0.5
         };
-        let _ = offset;
-        let cur = super::util::rect(self.panel.frame());
-        if cur != frame {
-            self.inner.borrow_mut().damage = Some(crate::scene::Damage::All);
-            self.panel.setFrame_display(ns_rect(frame), false);
-            self.view
-                .setFrame(ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h)));
-        }
         self.panel.setHasShadow(expanded);
+    }
+
+    /// Sizes the fixed window for the current screen and settings. Called only
+    /// when either changes, never per frame.
+    fn fit_window(&self) {
+        let frame = {
+            let i = self.inner.borrow();
+            i.model
+                .geometry
+                .window_frame(window_size(&i.model.geometry, &i.settings))
+        };
+        if frame == self.inner.borrow().frame {
+            return;
+        }
+        self.inner.borrow_mut().frame = frame;
+        self.panel.setFrame_display(ns_rect(frame), false);
+        self.view
+            .setFrame(ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h)));
+        self.inner.borrow_mut().drawn = None;
     }
 
     fn relayout(&self) {
@@ -537,12 +617,24 @@ impl App {
             .unwrap_or_default();
         let dmg = i.damage.take();
         let (offset, animating) = (i.offset, i.anim.is_some());
+        // While animating, only the shape's old and new rectangles change.
+        let size = i.model.size();
+        let shape = Rect::new(offset, 0.0, size.w, size.h);
+        let dirty = match i.drawn.replace(shape) {
+            Some(prev) if animating => union(prev, shape),
+            _ => shape,
+        };
         drop(i);
         super::editor::sync(&self.view, editor_rect, || initial);
         // Unchanged scene: nothing to draw; a small change (equalizer bars,
         // countdown digits): only that rectangle.
         match dmg {
-            _ if animating => self.view.setNeedsDisplay(true),
+            _ if animating => self.view.setNeedsDisplayInRect(ns_rect(Rect::new(
+                dirty.x - 4.0,
+                dirty.y - 4.0,
+                dirty.w + 8.0,
+                dirty.h + 8.0,
+            ))),
             Some(crate::scene::Damage::None) => {}
             Some(crate::scene::Damage::Rect(r)) => self
                 .view
@@ -614,6 +706,7 @@ impl App {
     // ---------- drawing ----------
 
     pub fn draw_island(&self) {
+        let _p = crate::perf::Probe::new("draw");
         let Ok(mut i) = self.inner.try_borrow_mut() else {
             return;
         };
@@ -691,14 +784,33 @@ impl App {
         )
     }
 
+    /// Debug probe: the pointer enters the middle of the island or leaves it.
+    #[cfg(debug_assertions)]
+    pub fn debug_hover(&self, inside: bool) {
+        let p = inside.then(|| {
+            let f = super::util::rect(self.panel.frame());
+            Point::new(f.w / 2.0, 10.0)
+        });
+        self.pointer_moved(p);
+    }
+
     pub fn pointer_moved(&self, p: Option<Point>) {
         let inside = p.is_some_and(|p| self.shape_contains(p));
+        // Outside the shape the window takes no clicks, so the menu bar beside
+        // the island stays usable.
+        if self.panel.ignoresMouseEvents() == inside {
+            self.panel.setIgnoresMouseEvents(!inside);
+        }
         let redraw = {
             let mut i = self.inner.borrow_mut();
+            let had_hover = i.hover.is_some();
             i.hover = p.filter(|_| inside);
             let before = i.model.machine.mode;
             i.model.machine.pointer(inside, mono());
-            i.model.machine.mode != before || i.model.machine.mode == Mode::Expanded
+            // Hover highlights need a redraw only while the pointer is on the page.
+            i.model.machine.mode != before
+                || (inside && i.model.machine.mode == Mode::Expanded)
+                || (had_hover && !inside)
         };
         if redraw {
             self.update();
@@ -1002,7 +1114,8 @@ impl App {
             i.model.motion.snap(size.w, size.h, open);
             i.anim = None;
         }
-        self.apply_frame(true);
+        self.fit_window();
+        self.apply_frame();
         self.update_fullscreen();
         self.update();
     }

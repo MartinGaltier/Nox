@@ -85,9 +85,9 @@ pub struct IslandMotion {
 impl IslandMotion {
     pub fn new(w: f64, h: f64) -> Self {
         Self {
-            w: Spring::new(w, 0.42, 0.78).with_epsilon(0.2),
-            h: Spring::new(h, 0.42, 0.82).with_epsilon(0.2),
-            open: Spring::new(0.0, 0.32, 1.0).with_epsilon(0.004),
+            w: Spring::new(w, 0.28, 0.9).with_epsilon(0.2),
+            h: Spring::new(h, 0.28, 0.92).with_epsilon(0.2),
+            open: Spring::new(0.0, 0.24, 1.0).with_epsilon(0.004),
         }
     }
     pub fn set_target(&mut self, w: f64, h: f64, open: bool) {
