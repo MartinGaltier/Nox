@@ -15,7 +15,8 @@ use nox_core::model::companion::{
 use nox_core::model::timers::{FocusPhase, TimerRun};
 use nox_core::model::watch::WatchOutcome;
 use nox_core::{
-    Command, Hub, IslandState, Module, ModuleContext, ModuleError, ModuleId, Settings, Worker,
+    Command, Hub, IslandState, Module, ModuleContext, ModuleError, ModuleId, Settings,
+    Subscription, Worker,
 };
 use objc2_core_graphics::{CGEventSource, CGEventSourceStateID, CGEventType};
 use std::collections::HashSet;
@@ -24,7 +25,8 @@ use std::time::Duration;
 
 /// A celebration lasts this long.
 const CELEBRATE_SECS: f64 = 20.0;
-const POLL: Duration = Duration::from_secs(2);
+/// Longest sleep: a backstop; changes arrive from the hub and deadlines are exact.
+const MAX_SLEEP: f64 = 60.0;
 
 /// The facts the mood is derived from (read from the hub).
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -242,6 +244,20 @@ impl Engine {
     }
 }
 
+/// How long the loop may sleep: the mood can only change without a hub change
+/// when inactivity reaches its threshold or a celebration runs out.
+fn next_check(idle: f64, s: &CompanionSettings, celebrate_until: f64, now: f64) -> Duration {
+    let mut wait = MAX_SLEEP;
+    if s.sleepy_after_secs > 0 && idle < s.sleepy_after_secs as f64 {
+        wait = wait.min(s.sleepy_after_secs as f64 - idle);
+    }
+    if celebrate_until > now {
+        wait = wait.min(celebrate_until - now);
+    }
+    // Never spin on rounding at a threshold.
+    Duration::from_secs_f64(wait.max(1.0))
+}
+
 /// Seconds since the last keyboard/mouse/trackpad event (no permission needed).
 fn idle_secs() -> f64 {
     // kCGAnyInputEventType = ~0
@@ -254,6 +270,8 @@ fn idle_secs() -> f64 {
 pub struct CompanionModule {
     worker: Option<Worker>,
     hub: Option<Hub>,
+    /// Wakes the loop on every hub change (no polling).
+    subscription: Option<Subscription>,
     settings: Arc<Mutex<Arc<Settings>>>,
 }
 
@@ -262,6 +280,7 @@ impl CompanionModule {
         Self {
             worker: None,
             hub: None,
+            subscription: None,
             settings: Arc::new(Mutex::new(Arc::new(Settings::default()))),
         }
     }
@@ -283,7 +302,7 @@ impl Module for CompanionModule {
         *self.settings.lock().unwrap_or_else(|e| e.into_inner()) = ctx.settings.clone();
         let hub = ctx.hub.clone();
         let settings = self.settings.clone();
-        self.worker = Some(Worker::spawn("companion", move |token| {
+        let worker = Worker::spawn("companion", move |token| {
             let mut engine = Engine::default();
             let mut last_gen = u64::MAX;
             let mut last_sleepy = None;
@@ -310,16 +329,26 @@ impl Module for CompanionModule {
                     last_gen = hub.generation();
                     last_sleepy = Some(sleepy);
                 }
-                if token.sleep(POLL) {
+                let wait = next_check(
+                    idle,
+                    &s.companion,
+                    engine.celebrate_until,
+                    nox_core::model::now(),
+                );
+                if token.sleep(wait) {
                     break;
                 }
             }
-        }));
+        });
+        let token = worker.token().clone();
+        self.subscription = Some(ctx.hub.subscribe(move || token.nudge()));
+        self.worker = Some(worker);
         self.hub = Some(ctx.hub);
         Ok(())
     }
 
     fn stop(&mut self) {
+        self.subscription.take();
         if let Some(mut w) = self.worker.take() {
             w.stop();
         }
@@ -341,6 +370,26 @@ impl Module for CompanionModule {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn next_check_sleeps_to_the_nearest_deadline() {
+        let s = CompanionSettings {
+            sleepy_after_secs: 30,
+            ..Default::default()
+        };
+        let secs = |d: Duration| d.as_secs_f64().round() as u64;
+        // Inactivity reaches its threshold in 20 s.
+        assert_eq!(secs(next_check(10.0, &s, 0.0, 1_000.0)), 20);
+        // A celebration ends in 5 s, before the threshold.
+        assert_eq!(secs(next_check(10.0, &s, 1_005.0, 1_000.0)), 5);
+        // Already sleepy with nothing running: only the backstop.
+        assert_eq!(secs(next_check(400.0, &s, 0.0, 1_000.0)), 60);
+        let off = CompanionSettings {
+            sleepy_after_secs: 0,
+            ..Default::default()
+        };
+        assert_eq!(secs(next_check(0.0, &off, 0.0, 1_000.0)), 60);
+    }
 
     fn base() -> Inputs {
         Inputs {
