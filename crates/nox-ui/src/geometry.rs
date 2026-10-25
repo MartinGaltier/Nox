@@ -484,4 +484,22 @@ mod tests {
         assert!(ignores_clicks(false));
         assert!(!ignores_clicks(true));
     }
+    #[test]
+    fn hot_zone_on_a_flat_display_hangs_centred_from_the_top() {
+        let flat = ScreenParams {
+            frame: Rect::new(0.0, 0.0, 1440.0, 900.0),
+            visible_frame: Rect::new(0.0, 0.0, 1440.0, 875.0),
+            safe_area_top: 0.0,
+            aux_left: None,
+            aux_right: None,
+            status_bar_thickness: 24.0,
+        };
+        let g = NotchGeometry::new(&flat, true, IslandSilhouette::Capsule);
+        assert!(!g.notched);
+        let hot = g.hot_zone(64.0, 6.0);
+        assert_eq!(hot.max_y(), 900.0);
+        // Whole-point origin: the centre may be half a point off for odd widths.
+        assert!((hot.x + hot.w / 2.0 - 720.0).abs() <= 0.5);
+        assert!(hot.x >= 0.0 && hot.max_x() <= 1440.0);
+    }
 }
