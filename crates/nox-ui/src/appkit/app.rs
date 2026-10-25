@@ -8,7 +8,7 @@ use super::util::{ActionTarget, Observer, Timer, mono, ns_rect};
 use super::{files, haptics, screens};
 use crate::UiContext;
 use crate::geom::{Point, Rect, Size};
-use crate::geometry::{NotchGeometry, island_contains};
+use crate::geometry::{NotchGeometry, ignores_clicks, island_contains};
 use crate::gesture::{GestureAction, ScrollInput, movement};
 use crate::island::{IslandModel, Surface, machine_config};
 use crate::machine::Mode;
@@ -50,8 +50,7 @@ const HOT_MARGIN: f64 = 6.0;
 /// that always takes the pointer. The island window itself ignores clicks
 /// outside its shape, so this is what the pointer meets to re-enter it.
 fn hot_zone_frame(geometry: &NotchGeometry) -> Rect {
-    let c = geometry.compact_size(HOT_WING);
-    geometry.window_frame(Size::new(c.w + 2.0 * HOT_MARGIN, c.h + HOT_MARGIN))
+    geometry.hot_zone(HOT_WING, HOT_MARGIN)
 }
 
 /// Size of the fixed panel: the largest island the settings allow, plus room
@@ -817,7 +816,7 @@ impl App {
         // Outside the shape the window takes no clicks, so the menu bar beside
         // the island stays usable.
         if self.panel.ignoresMouseEvents() == inside {
-            self.panel.setIgnoresMouseEvents(!inside);
+            self.panel.setIgnoresMouseEvents(ignores_clicks(inside));
         }
         let redraw = {
             let mut i = self.inner.borrow_mut();
