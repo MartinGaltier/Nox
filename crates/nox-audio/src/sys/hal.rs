@@ -41,6 +41,7 @@ pub mod sel {
     pub const PROCESS_PID: u32 = cc(b"ppid");
     pub const PROCESS_BUNDLE_ID: u32 = cc(b"pbid");
     pub const PROCESS_RUNNING_OUTPUT: u32 = cc(b"piro");
+    pub const PROCESS_RUNNING_INPUT: u32 = cc(b"piri");
     pub const TAP_FORMAT: u32 = cc(b"tfmt");
 }
 
@@ -227,6 +228,11 @@ pub fn process_bundle_id(obj: ObjectId) -> Option<String> {
 
 pub fn process_running_output(obj: ObjectId) -> bool {
     get::<u32>(obj, sel::PROCESS_RUNNING_OUTPUT, SCOPE_GLOBAL).is_ok_and(|v| v != 0)
+}
+
+/// Whether the process is capturing audio right now (a call, a recording).
+pub fn process_running_input(obj: ObjectId) -> bool {
+    get::<u32>(obj, sel::PROCESS_RUNNING_INPUT, SCOPE_GLOBAL).is_ok_and(|v| v != 0)
 }
 
 /// The process object of `pid` (exists even before it plays).
