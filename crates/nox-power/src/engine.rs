@@ -6,21 +6,22 @@
 //! or below the limit; refuse to start in that state.)
 
 use crate::assertions::{AssertionId, AssertionKind, Assertions};
-use crate::lid::{LidControl, LidError};
+use crate::guard::{BATTERY_FLOOR_PERCENT, GuardReason, THERMAL_HEAVY};
+use crate::lid::{LidControl, LidError, LidPolicy, POLL_SECS};
+use crate::probe::PowerSourceInfo;
 use nox_core::alert::{Alert, AlertKind, AlertPriority};
 use nox_core::model::Timestamp;
 use nox_core::model::power::{
-    HelperStatus, KeepAwakeDuration, KeepAwakeMode, KeepAwakeSession, PowerSettings, PowerState,
+    KeepAwakeDuration, KeepAwakeMode, KeepAwakeSession, LidRuleStatus, PowerSettings, PowerState,
     StopReason,
 };
-use nox_helper::protocol::{ErrorCode, RestoreOutcome, RevokeReason};
-use nox_helper::sys::PowerSourceInfo;
 
 struct Active {
     session: KeepAwakeSession,
     assertions: Vec<AssertionId>,
     lid_held: bool,
-    next_heartbeat: Timestamp,
+    /// Next time the journal is checked for a guard stop.
+    next_poll: Timestamp,
 }
 
 pub struct Engine<A: Assertions, L: LidControl> {
@@ -73,13 +74,23 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
         self.active.is_some()
     }
 
+    /// A closed-lid session is running (the module then feeds [`Self::on_sensors`]).
+    pub fn lid_held(&self) -> bool {
+        self.active.as_ref().is_some_and(|a| a.lid_held)
+    }
+
     pub fn set_notice(&mut self, notice: Option<String>) {
         self.state.notice = notice;
         self.dirty = true;
     }
 
-    pub fn set_helper_busy(&mut self, busy: bool) {
-        self.state.helper_busy = busy;
+    pub fn set_rule_busy(&mut self, busy: bool) {
+        self.state.rule_busy = busy;
+        self.dirty = true;
+    }
+
+    pub fn set_legacy_helper(&mut self, present: bool) {
+        self.state.legacy_helper = present;
         self.dirty = true;
     }
 
@@ -88,9 +99,9 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
         self.dirty = true;
     }
 
-    /// Re-reads helper status and `SleepDisabled`.
+    /// Re-reads the rule status and `SleepDisabled`.
     pub fn refresh(&mut self) {
-        self.state.helper = self.lid.status();
+        self.state.lid_rule = self.lid.rule_status();
         self.state.lid_sleep_disabled = self.lid.sleep_disabled();
         self.dirty = true;
     }
@@ -128,8 +139,15 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
         }
     }
 
+    fn policy(&self) -> LidPolicy {
+        LidPolicy {
+            only_on_ac: self.settings.only_on_ac,
+            min_battery: self.settings.stop_below_percent,
+        }
+    }
+
     /// Starts a session, replacing a running one (keeping the closed-lid
-    /// lease when both are closed-lid, so pmset is not toggled needlessly).
+    /// state when both are closed-lid, so pmset is not toggled needlessly).
     pub fn start(&mut self, mode: KeepAwakeMode, duration: KeepAwakeDuration, now: Timestamp) {
         if let Some(r) = self.power_guard() {
             let msg = match r {
@@ -175,21 +193,19 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
             }
         }
 
-        if mode.needs_helper() && !keep_lid {
-            if let Err(e) = self.lid.acquire(self.settings.stop_below_percent) {
+        if mode.needs_helper() {
+            // Same state when kept: only the guard parameters are refreshed.
+            if let Err(e) = self.lid.acquire(self.policy()) {
                 self.release_assertions(&ids);
-                if matches!(e, LidError::NotInstalled | LidError::Forbidden(_)) {
+                if keep_lid {
+                    self.release_lid();
+                }
+                if e == LidError::NotInstalled {
                     self.refresh();
                 }
                 self.refuse(e.message_fr());
                 return;
             }
-        } else if keep_lid && let Err(e) = self.lid.acquire(self.settings.stop_below_percent) {
-            // Refresh of the existing lease failed: treat as lost.
-            self.release_assertions(&ids);
-            self.release_lid();
-            self.refuse(e.message_fr());
-            return;
         }
 
         let session = KeepAwakeSession {
@@ -210,7 +226,7 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
             session: session.clone(),
             assertions: ids,
             lid_held: mode.needs_helper(),
-            next_heartbeat: now + self.lid.heartbeat_secs(),
+            next_poll: now + POLL_SECS,
         });
         self.state.active = Some(session);
         self.state.last_error = None;
@@ -250,23 +266,12 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
     }
 
     fn release_lid(&mut self) {
-        match self.lid.release() {
-            Ok(RestoreOutcome::Failed) => {
-                self.state.last_error = Some(
-                    "La veille capot fermé n’a pas pu être rétablie ; l’assistant réessaie.".into(),
-                )
-            }
-            Ok(_) => {}
-            // The connection is closed anyway: the helper restores after the
-            // grace period.
-            Err(e) => {
-                log::warn!("lid release: {e:?}");
-                self.state.last_error = Some(format!(
-                    "{} La veille capot fermé sera rétablie par l’assistant d’ici {} s.",
-                    e.message_fr(),
-                    crate::lid::LEASE_SECS
-                ));
-            }
+        if let Err(e) = self.lid.release() {
+            log::warn!("lid release: {e:?}");
+            self.state.last_error = Some(format!(
+                "{} Nox réessaiera au prochain lancement.",
+                e.message_fr()
+            ));
         }
         self.state.lid_sleep_disabled = self.lid.sleep_disabled();
     }
@@ -281,7 +286,6 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
     }
 
     pub fn on_settings(&mut self, s: PowerSettings, now: Timestamp) {
-        let threshold_changed = s.stop_below_percent != self.settings.stop_below_percent;
         self.settings = s;
         if self.active.is_none() {
             return;
@@ -290,20 +294,56 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
             self.stop(r, now);
             return;
         }
-        if threshold_changed && self.active.as_ref().is_some_and(|a| a.lid_held) {
-            // Same connection: the helper only updates the lease parameters.
-            if let Err(e) = self.lid.acquire(self.settings.stop_below_percent) {
-                self.state.last_error = Some(e.message_fr());
-                self.stop(StopReason::HelperLost, now);
-            }
+        if self.active.as_ref().is_some_and(|a| a.lid_held)
+            && let Err(e) = self.lid.acquire(self.policy())
+        {
+            self.state.last_error = Some(e.message_fr());
+            self.stop(StopReason::HelperLost, now);
         }
     }
 
-    /// Expiry, heartbeats, guards. Returns seconds until the next deadline.
-    pub fn tick(&mut self, now: Timestamp) -> Option<f64> {
-        let Some(a) = &self.active else {
-            return None;
+    /// Closed-lid guards that Nox runs itself, on the same thresholds as the
+    /// guard process (`disablesleep` also turns off the software battery and
+    /// thermal sleep protections, so both must watch). Battery: at or below
+    /// 5 % on battery, whatever the user set. Thermal: heavy pressure.
+    pub fn on_sensors(
+        &mut self,
+        power: Option<PowerSourceInfo>,
+        thermal: Option<u64>,
+        now: Timestamp,
+    ) {
+        if !self.lid_held() {
+            return;
+        }
+        let low = power.is_some_and(|p| {
+            p.on_battery
+                && p.battery_percent
+                    .is_some_and(|c| c <= BATTERY_FLOOR_PERCENT)
+        });
+        let reason = if low {
+            Some(GuardReason::Battery)
+        } else if thermal.is_some_and(|t| t >= THERMAL_HEAVY) {
+            Some(GuardReason::Thermal)
+        } else {
+            None
         };
+        if let Some(r) = reason {
+            self.end_lid_session(r, now);
+        }
+    }
+
+    /// Ends the session because the closed-lid guard tripped: releases the
+    /// lid state (restored through the journal) and says why.
+    fn end_lid_session(&mut self, reason: GuardReason, now: Timestamp) {
+        // `stop` releases the lid state: a no-op when the guard already did it.
+        self.stop(stop_reason(reason), now);
+        self.state.last_error = Some(guard_message(reason));
+        self.state.lid_sleep_disabled = self.lid.sleep_disabled();
+    }
+
+    /// Expiry, guard checks, journal polls. Returns seconds until the next deadline.
+    pub fn tick(&mut self, now: Timestamp) -> Option<f64> {
+        let a = self.active.as_ref()?;
         if a.session.ends_at.is_some_and(|e| now >= e) {
             self.stop(StopReason::Expired, now);
             return None;
@@ -312,66 +352,28 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
             self.stop(r, now);
             return None;
         }
-        if a.lid_held && now >= a.next_heartbeat {
-            match self.heartbeat_or_rejoin() {
-                Ok(()) => {
-                    let period = self.lid.heartbeat_secs();
-                    if let Some(a) = &mut self.active {
-                        a.next_heartbeat = now + period;
-                    }
-                    let v = self.lid.sleep_disabled();
-                    if v != self.state.lid_sleep_disabled {
-                        self.state.lid_sleep_disabled = v;
-                        self.dirty = true;
-                    }
-                }
-                Err(e) => {
-                    let reason = match &e {
-                        LidError::Revoked(RevokeReason::Battery)
-                        | LidError::Refused {
-                            code: ErrorCode::Battery,
-                            ..
-                        } => StopReason::BatteryThreshold,
-                        LidError::Revoked(RevokeReason::Thermal)
-                        | LidError::Refused {
-                            code: ErrorCode::Thermal,
-                            ..
-                        } => StopReason::Thermal,
-                        _ => StopReason::HelperLost,
-                    };
-                    // The helper already restored (or will after the grace).
-                    // `release` here only closes our connection and clears the
-                    // marker; on a dead lease the helper answers "nothing".
-                    if let Some(a) = &mut self.active {
-                        a.lid_held = false;
-                    }
-                    let _ = self.lid.release();
-                    self.stop(reason, now);
-                    self.state.last_error = Some(e.message_fr());
-                    self.state.lid_sleep_disabled = self.lid.sleep_disabled();
-                    return None;
-                }
+        if a.lid_held && now >= a.next_poll {
+            if let Some(reason) = self.lid.take_guard_stop() {
+                // The guard already put lid sleep back: end the session.
+                self.end_lid_session(reason, now);
+                return None;
+            }
+            if let Some(a) = &mut self.active {
+                a.next_poll = now + POLL_SECS;
+            }
+            let v = self.lid.sleep_disabled();
+            if v != self.state.lid_sleep_disabled {
+                self.state.lid_sleep_disabled = v;
+                self.dirty = true;
             }
         }
         let a = self.active.as_ref()?;
         let mut next = a.session.ends_at.map(|e| e - now);
         if a.lid_held {
-            let hb = (a.next_heartbeat - now).max(0.0);
-            next = Some(next.map_or(hb, |n| n.min(hb)));
+            let poll = (a.next_poll - now).max(0.0);
+            next = Some(next.map_or(poll, |n| n.min(poll)));
         }
         next.map(|n| n.max(0.0))
-    }
-
-    /// Heartbeat; if the connection dropped (helper relaunched by launchd),
-    /// reconnect once and take the lease back.
-    fn heartbeat_or_rejoin(&mut self) -> Result<(), LidError> {
-        match self.lid.heartbeat() {
-            Err(LidError::Unreachable(_)) => self
-                .lid
-                .acquire(self.settings.stop_below_percent)
-                .map(|_| ()),
-            r => r,
-        }
     }
 
     /// App quit / module stop.
@@ -379,14 +381,35 @@ impl<A: Assertions, L: LidControl> Engine<A, L> {
         self.stop(StopReason::AppQuit, now);
     }
 
-    pub fn helper_status(&self) -> HelperStatus {
-        self.state.helper
+    pub fn lid_rule_status(&self) -> LidRuleStatus {
+        self.state.lid_rule
+    }
+}
+
+/// Why the session ends when the guard restored lid sleep.
+fn stop_reason(r: GuardReason) -> StopReason {
+    match r {
+        GuardReason::Battery => StopReason::BatteryThreshold,
+        GuardReason::Thermal => StopReason::Thermal,
+        GuardReason::External => StopReason::HelperLost,
+    }
+}
+
+fn guard_message(r: GuardReason) -> String {
+    match r {
+        GuardReason::Battery => "Batterie sous le seuil : veille capot fermé rétablie.".into(),
+        GuardReason::Thermal => {
+            "Température élevée : veille capot fermé rétablie par sécurité.".into()
+        }
+        GuardReason::External => "Le réglage de veille a été modifié en dehors de Nox.".into(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::guard::RestoreOutcome;
+    use crate::lid::LidPolicy;
     use nox_core::Reading;
     use std::sync::{Arc, Mutex};
 
@@ -422,27 +445,28 @@ mod tests {
 
     /// A pmset-like fake: `disabled` is the system setting.
     struct LState {
-        status: HelperStatus,
+        status: LidRuleStatus,
         disabled: bool,
         held: bool,
         acquires: u32,
         releases: u32,
-        heartbeats: u32,
-        heartbeat_error: Option<LidError>,
+        polls: u32,
+        /// What the guard reports at the next poll.
+        guard_stop: Option<GuardReason>,
         acquire_error: Option<LidError>,
     }
     #[derive(Clone)]
     struct FakeLid(Arc<Mutex<LState>>);
     impl FakeLid {
-        fn new(status: HelperStatus) -> Self {
+        fn new(status: LidRuleStatus) -> Self {
             Self(Arc::new(Mutex::new(LState {
                 status,
                 disabled: false,
                 held: false,
                 acquires: 0,
                 releases: 0,
-                heartbeats: 0,
-                heartbeat_error: None,
+                polls: 0,
+                guard_stop: None,
                 acquire_error: None,
             })))
         }
@@ -451,16 +475,16 @@ mod tests {
         }
     }
     impl LidControl for FakeLid {
-        fn status(&mut self) -> HelperStatus {
+        fn rule_status(&mut self) -> LidRuleStatus {
             self.with(|s| s.status)
         }
         fn sleep_disabled(&mut self) -> Reading<bool> {
             Reading::Measured(self.with(|s| s.disabled))
         }
-        fn acquire(&mut self, _min: u8) -> Result<bool, LidError> {
+        fn acquire(&mut self, _policy: LidPolicy) -> Result<bool, LidError> {
             self.with(|s| {
                 s.acquires += 1;
-                if s.status != HelperStatus::Installed {
+                if s.status != LidRuleStatus::Installed {
                     return Err(LidError::NotInstalled);
                 }
                 if let Some(e) = s.acquire_error.take() {
@@ -471,16 +495,15 @@ mod tests {
                 Ok(true)
             })
         }
-        fn heartbeat(&mut self) -> Result<(), LidError> {
+        fn take_guard_stop(&mut self) -> Option<GuardReason> {
             self.with(|s| {
-                s.heartbeats += 1;
-                match s.heartbeat_error.take() {
-                    Some(e) => {
-                        s.held = false;
-                        Err(e)
-                    }
-                    None => Ok(()),
+                s.polls += 1;
+                let r = s.guard_stop.take();
+                if r.is_some() {
+                    s.held = false;
+                    s.disabled = false;
                 }
+                r
             })
         }
         fn release(&mut self) -> Result<RestoreOutcome, LidError> {
@@ -492,7 +515,7 @@ mod tests {
                 Ok(if was {
                     RestoreOutcome::Restored
                 } else {
-                    RestoreOutcome::Nothing
+                    RestoreOutcome::Untouched
                 })
             })
         }
@@ -500,7 +523,7 @@ mod tests {
 
     type E = Engine<FakeAssertions, FakeLid>;
 
-    fn engine(status: HelperStatus) -> (E, FakeAssertions, FakeLid) {
+    fn engine(status: LidRuleStatus) -> (E, FakeAssertions, FakeLid) {
         let a = FakeAssertions::default();
         let l = FakeLid::new(status);
         let mut e = Engine::new(a.clone(), l.clone(), PowerSettings::default());
@@ -520,10 +543,10 @@ mod tests {
 
     #[test]
     fn system_mode_holds_one_system_assertion() {
-        let (mut e, a, l) = engine(HelperStatus::NotInstalled);
+        let (mut e, a, l) = engine(LidRuleStatus::NotInstalled);
         e.start(KeepAwakeMode::System, M15, T0);
         assert_eq!(a.live(), vec![AssertionKind::System]);
-        assert_eq!(l.with(|s| s.acquires), 0, "no helper for idle modes");
+        assert_eq!(l.with(|s| s.acquires), 0, "no lid state for idle modes");
         let s = e.state().active.clone().unwrap();
         assert_eq!(s.ends_at, Some(T0 + 900.0));
         assert_eq!(e.take_alerts().len(), 1, "start alert");
@@ -535,7 +558,7 @@ mod tests {
 
     #[test]
     fn display_mode_holds_both() {
-        let (mut e, a, _) = engine(HelperStatus::NotInstalled);
+        let (mut e, a, _) = engine(LidRuleStatus::NotInstalled);
         e.start(
             KeepAwakeMode::SystemAndDisplay,
             KeepAwakeDuration::Unlimited,
@@ -555,7 +578,7 @@ mod tests {
 
     #[test]
     fn expires_exactly() {
-        let (mut e, a, _) = engine(HelperStatus::NotInstalled);
+        let (mut e, a, _) = engine(LidRuleStatus::NotInstalled);
         e.start(KeepAwakeMode::System, KeepAwakeDuration::Minutes(30), T0);
         let wait = e.tick(T0 + 100.0).unwrap();
         assert!((wait - 1700.0).abs() < 1e-6);
@@ -570,8 +593,8 @@ mod tests {
     }
 
     #[test]
-    fn closed_lid_needs_helper_and_leaks_nothing() {
-        let (mut e, a, l) = engine(HelperStatus::NotInstalled);
+    fn closed_lid_needs_the_rule_and_leaks_nothing() {
+        let (mut e, a, l) = engine(LidRuleStatus::NotInstalled);
         e.start(KeepAwakeMode::ClosedLid, M15, T0);
         assert!(!e.is_active());
         assert!(a.live().is_empty(), "assertion released on refusal");
@@ -580,64 +603,115 @@ mod tests {
                 .last_error
                 .as_deref()
                 .unwrap()
-                .contains("assistant")
+                .contains("autorisation")
         );
         assert!(!l.with(|s| s.disabled));
     }
 
     #[test]
-    fn closed_lid_acquires_heartbeats_and_restores() {
-        let (mut e, a, l) = engine(HelperStatus::Installed);
+    fn closed_lid_sets_polls_and_restores_at_stop() {
+        let (mut e, a, l) = engine(LidRuleStatus::Installed);
         e.start(KeepAwakeMode::ClosedLid, KeepAwakeDuration::Minutes(60), T0);
         assert_eq!(a.live(), vec![AssertionKind::System]);
         assert!(l.with(|s| s.disabled));
         assert_eq!(e.state().lid_sleep_disabled, Reading::Measured(true));
         let wait = e.tick(T0 + 1.0).unwrap();
-        assert!(wait <= HEARTBEAT_SECS_TEST);
+        assert!(wait <= POLL_SECS);
         e.tick(T0 + 15.0);
         e.tick(T0 + 30.0);
-        assert_eq!(l.with(|s| s.heartbeats), 2);
+        assert_eq!(l.with(|s| s.polls), 2);
         e.stop(StopReason::User, T0 + 31.0);
         assert!(!l.with(|s| s.disabled), "restored at stop");
         assert_eq!(l.with(|s| s.releases), 1);
         assert_eq!(e.state().lid_sleep_disabled, Reading::Measured(false));
     }
 
-    const HEARTBEAT_SECS_TEST: f64 = crate::lid::HEARTBEAT_SECS;
-
     #[test]
-    fn revoked_lease_stops_with_reason() {
-        let (mut e, a, l) = engine(HelperStatus::Installed);
+    fn guard_battery_stop_ends_session_with_reason() {
+        let (mut e, a, l) = engine(LidRuleStatus::Installed);
         e.start(KeepAwakeMode::ClosedLid, M15, T0);
-        l.with(|s| s.heartbeat_error = Some(LidError::Revoked(RevokeReason::Battery)));
+        l.with(|s| s.guard_stop = Some(GuardReason::Battery));
         e.tick(T0 + 15.0);
         assert!(!e.is_active());
         assert_eq!(e.state().last_stop, Some(StopReason::BatteryThreshold));
         assert!(a.live().is_empty());
-        assert!(e.state().last_error.is_some());
+        assert!(
+            e.state()
+                .last_error
+                .as_deref()
+                .unwrap()
+                .contains("Batterie")
+        );
+        assert!(
+            !l.with(|s| s.disabled),
+            "restored (by the guard, then released)"
+        );
     }
 
     #[test]
-    fn helper_restart_is_rejoined() {
-        let (mut e, _, l) = engine(HelperStatus::Installed);
+    fn guard_thermal_stop_and_external_change_map_to_their_reason() {
+        let (mut e, _, l) = engine(LidRuleStatus::Installed);
         e.start(KeepAwakeMode::ClosedLid, M15, T0);
-        l.with(|s| s.heartbeat_error = Some(LidError::Unreachable("closed".into())));
+        l.with(|s| s.guard_stop = Some(GuardReason::Thermal));
         e.tick(T0 + 15.0);
-        assert!(e.is_active(), "re-acquired after reconnect");
-        assert_eq!(l.with(|s| s.acquires), 2);
-        // Second failure with a failing rejoin: lost.
-        l.with(|s| {
-            s.heartbeat_error = Some(LidError::Unreachable("closed".into()));
-            s.acquire_error = Some(LidError::Unreachable("refused".into()));
-        });
-        e.tick(T0 + 30.0);
-        assert!(!e.is_active());
+        assert_eq!(e.state().last_stop, Some(StopReason::Thermal));
+
+        e.start(KeepAwakeMode::ClosedLid, M15, T0 + 20.0);
+        l.with(|s| s.guard_stop = Some(GuardReason::External));
+        e.tick(T0 + 35.0);
         assert_eq!(e.state().last_stop, Some(StopReason::HelperLost));
     }
 
     #[test]
-    fn switching_closed_lid_sessions_keeps_the_lease() {
-        let (mut e, a, l) = engine(HelperStatus::Installed);
+    fn closed_lid_floor_and_thermal_guards_hold_even_with_threshold_off() {
+        let (mut e, _, l) = engine(LidRuleStatus::Installed);
+        e.on_settings(
+            PowerSettings {
+                stop_below_percent: 0,
+                ..Default::default()
+            },
+            T0,
+        );
+        let battery = |pct| {
+            Some(PowerSourceInfo {
+                on_battery: true,
+                battery_percent: Some(pct),
+            })
+        };
+        e.start(KeepAwakeMode::ClosedLid, M15, T0);
+        e.on_sensors(battery(6), None, T0 + 1.0);
+        assert!(e.is_active(), "above the 5 % floor");
+        e.on_sensors(battery(5), None, T0 + 2.0);
+        assert!(!e.is_active());
+        assert_eq!(e.state().last_stop, Some(StopReason::BatteryThreshold));
+        assert!(!l.with(|s| s.disabled), "restored by Nox at once");
+
+        e.start(KeepAwakeMode::ClosedLid, M15, T0 + 3.0);
+        e.on_sensors(None, Some(1), T0 + 4.0);
+        assert!(e.is_active(), "moderate pressure is fine");
+        e.on_sensors(None, Some(2), T0 + 5.0);
+        assert_eq!(e.state().last_stop, Some(StopReason::Thermal));
+        assert!(!e.is_active());
+    }
+
+    #[test]
+    fn sensors_are_ignored_outside_closed_lid() {
+        let (mut e, _, _) = engine(LidRuleStatus::Installed);
+        e.start(KeepAwakeMode::System, M15, T0);
+        e.on_sensors(
+            Some(PowerSourceInfo {
+                on_battery: true,
+                battery_percent: Some(1),
+            }),
+            Some(4),
+            T0 + 1.0,
+        );
+        assert!(e.is_active());
+    }
+
+    #[test]
+    fn switching_closed_lid_sessions_keeps_the_state() {
+        let (mut e, a, l) = engine(LidRuleStatus::Installed);
         e.start(KeepAwakeMode::ClosedLid, M15, T0);
         e.start(
             KeepAwakeMode::ClosedLid,
@@ -655,7 +729,7 @@ mod tests {
 
     #[test]
     fn only_on_ac() {
-        let (mut e, a, _) = engine(HelperStatus::NotInstalled);
+        let (mut e, a, _) = engine(LidRuleStatus::NotInstalled);
         e.on_settings(
             PowerSettings {
                 only_on_ac: true,
@@ -682,7 +756,7 @@ mod tests {
 
     #[test]
     fn battery_threshold() {
-        let (mut e, _, _) = engine(HelperStatus::NotInstalled);
+        let (mut e, _, _) = engine(LidRuleStatus::NotInstalled);
         e.start(KeepAwakeMode::System, M15, T0);
         let p = |on_battery, pct| {
             Some(PowerSourceInfo {
@@ -713,7 +787,7 @@ mod tests {
 
     #[test]
     fn enabling_only_on_ac_while_on_battery_stops() {
-        let (mut e, _, _) = engine(HelperStatus::NotInstalled);
+        let (mut e, _, _) = engine(LidRuleStatus::NotInstalled);
         e.on_power(
             Some(PowerSourceInfo {
                 on_battery: true,
@@ -735,7 +809,7 @@ mod tests {
 
     #[test]
     fn assertion_failure_is_reported_not_hidden() {
-        let (mut e, a, _) = engine(HelperStatus::NotInstalled);
+        let (mut e, a, _) = engine(LidRuleStatus::NotInstalled);
         a.0.lock().unwrap().fail = true;
         e.start(KeepAwakeMode::SystemAndDisplay, M15, T0);
         assert!(!e.is_active());
@@ -745,7 +819,7 @@ mod tests {
 
     #[test]
     fn toggle_uses_defaults() {
-        let (mut e, a, _) = engine(HelperStatus::NotInstalled);
+        let (mut e, a, _) = engine(LidRuleStatus::NotInstalled);
         e.toggle(T0);
         let s = e.state().active.clone().unwrap();
         assert_eq!(s.mode, KeepAwakeMode::System);

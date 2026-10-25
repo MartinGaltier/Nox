@@ -1,6 +1,6 @@
 [package]
 name = "nox-power"
-description = "Keep-awake modes, power assertions and closed-lid helper client."
+description = "Keep-awake modes, power assertions and closed-lid control (sudoers rule, journal, guard)."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -8,9 +8,8 @@ rust-version.workspace = true
 
 [dependencies]
 nox-core.workspace = true
-# Wire protocol, constants and read-only IOKit probes shared with the helper.
-nox-helper = { path = "../nox-helper" }
 log.workspace = true
+libc.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 crossbeam-channel.workspace = true

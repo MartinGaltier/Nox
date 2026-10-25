@@ -1,11 +1,13 @@
 //! The `Power` module: one worker thread owns the [`Engine`]; a second,
 //! idle CFRunLoop thread forwards IOPowerSources change notifications (no
-//! polling, no external process). Helper install/uninstall run on a third,
-//! short-lived worker so the admin prompt never blocks heartbeats.
+//! polling, no external process). Rule install/uninstall run on a third,
+//! short-lived worker so the admin prompt never blocks the engine.
 
 use crate::assertions::IoPmAssertions;
 use crate::engine::Engine;
-use crate::lid::{HelperClient, LidControl};
+use crate::lid::{LidClient, LidControl};
+use crate::probe;
+use crate::rule;
 use crate::sys::{PowerSourceWatch, watch_power_sources};
 use crossbeam_channel::{Receiver, RecvTimeoutError, Sender, unbounded};
 use nox_core::alert::{Alert, AlertKind};
@@ -69,7 +71,7 @@ impl Module for PowerModule {
         let settings = ctx.settings.power.clone();
         let tx_jobs = tx.clone();
         let worker = Worker::spawn("power", move |_token| {
-            let engine = Engine::new(IoPmAssertions, HelperClient::system(), settings);
+            let engine = Engine::new(IoPmAssertions, LidClient::system(), settings);
             run(engine, hub, rx, tx_jobs);
         });
         self.tx = Some(tx);
@@ -123,8 +125,9 @@ pub(crate) fn run<A: crate::assertions::Assertions, L: LidControl>(
     rx: Receiver<Msg>,
     tx: Sender<Msg>,
 ) {
-    engine.on_power(nox_helper::sys::power_source(), now());
+    engine.on_power(probe::power_source(), now());
     engine.refresh();
+    engine.set_legacy_helper(rule::legacy_helper_present());
     if let Some(n) = crate::recovery::take_notice() {
         hub.push_alert(
             Alert::new(
@@ -140,6 +143,9 @@ pub(crate) fn run<A: crate::assertions::Assertions, L: LidControl>(
     let mut job: Option<Worker> = None;
 
     loop {
+        if engine.lid_held() {
+            engine.on_sensors(probe::power_source(), probe::thermal_pressure(), now());
+        }
         let next = engine.tick(now());
         publish(&hub, &mut engine);
         let msg = match next {
@@ -158,13 +164,14 @@ pub(crate) fn run<A: crate::assertions::Assertions, L: LidControl>(
                 PowerCommand::Toggle => engine.toggle(now()),
                 PowerCommand::Refresh => engine.refresh(),
                 PowerCommand::InstallHelper | PowerCommand::UninstallHelper if job.is_some() => {}
-                PowerCommand::InstallHelper => match crate::install::current_app_bundle() {
-                    Err(e) => engine.set_error(Some(e)),
-                    Ok(bundle) => {
-                        engine.set_helper_busy(true);
+                PowerCommand::InstallHelper => match std::env::current_exe() {
+                    Err(e) => engine.set_error(Some(e.to_string())),
+                    Ok(exe) => {
+                        engine.set_rule_busy(true);
                         let tx = tx.clone();
+                        let remove_legacy = engine.state().legacy_helper;
                         job = Some(Worker::spawn("power-install", move |token| {
-                            let result = crate::install::install(&bundle, &token);
+                            let result = rule::install(remove_legacy, &exe, &token);
                             let _ = tx.send(Msg::JobDone {
                                 install: true,
                                 result,
@@ -181,10 +188,10 @@ pub(crate) fn run<A: crate::assertions::Assertions, L: LidControl>(
                     {
                         engine.stop(StopReason::User, now());
                     }
-                    engine.set_helper_busy(true);
+                    engine.set_rule_busy(true);
                     let tx = tx.clone();
                     job = Some(Worker::spawn("power-uninstall", move |token| {
-                        let result = crate::install::uninstall(&token);
+                        let result = rule::uninstall(&token);
                         let _ = tx.send(Msg::JobDone {
                             install: false,
                             result,
@@ -193,21 +200,21 @@ pub(crate) fn run<A: crate::assertions::Assertions, L: LidControl>(
                 }
             },
             Msg::Settings(s) => engine.on_settings(s, now()),
-            Msg::PowerChanged => engine.on_power(nox_helper::sys::power_source(), now()),
+            Msg::PowerChanged => engine.on_power(probe::power_source(), now()),
             Msg::JobDone { install, result } => {
                 if let Some(mut w) = job.take() {
                     w.stop();
                 }
-                engine.set_helper_busy(false);
+                engine.set_rule_busy(false);
                 match result {
                     Ok(()) => {
                         engine.set_error(None);
                         hub.push_alert(Alert::new(
                             AlertKind::KeepAwake,
                             if install {
-                                "Assistant capot fermé installé"
+                                "Autorisation capot fermé installée"
                             } else {
-                                "Assistant capot fermé désinstallé"
+                                "Autorisation capot fermé retirée"
                             },
                             "checkmark.shield",
                         ));
@@ -215,6 +222,7 @@ pub(crate) fn run<A: crate::assertions::Assertions, L: LidControl>(
                     Err(e) => engine.set_error(Some(e)),
                 }
                 engine.refresh();
+                engine.set_legacy_helper(rule::legacy_helper_present());
             }
             Msg::Shutdown => {
                 if let Some(mut w) = job.take() {

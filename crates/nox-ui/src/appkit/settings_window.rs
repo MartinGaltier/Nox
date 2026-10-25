@@ -941,13 +941,13 @@ fn system(
         |s| s.power.stop_below_percent,
         |s, v| s.power.stop_below_percent = v,
     );
-    f.note("Le mode capot fermé nécessite un petit assistant installé une fois avec votre mot de passe administrateur.");
-    let install = f.button("Installer l’assistant capot fermé…", || {
+    f.note("Le mode capot fermé demande une autorisation sudo limitée à « pmset disablesleep », installée une fois avec votre mot de passe administrateur. Nox ne voit ni ne stocke ce mot de passe.");
+    let install = f.button("Installer l’autorisation capot fermé…", || {
         if let Some(a) = app::get() {
             super::alerts::install_helper(&a);
         }
     });
-    let uninstall = f.button("Désinstaller l’assistant", || {
+    let uninstall = f.button("Retirer l’autorisation capot fermé", || {
         if let Some(a) = app::get() {
             a.hub.send(Command::Power(PowerCommand::UninstallHelper));
         }

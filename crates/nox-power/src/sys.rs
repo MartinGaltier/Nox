@@ -1,7 +1,7 @@
 //! Unsafe FFI for the app side, isolated here: IOPM assertions and the
 //! IOPowerSources change notification on a private CFRunLoop thread.
 
-use nox_helper::sys::{CFRelease, CFRetain, CFStringRef, CFTypeRef, cfstr};
+use crate::probe::{CFRelease, CFRetain, CFStringRef, CFTypeRef, cfstr};
 use std::ffi::c_void;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
