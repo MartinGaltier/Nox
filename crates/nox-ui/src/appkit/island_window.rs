@@ -334,6 +334,55 @@ fn refresh_tracking(view: &NSView, slot: &RefCell<Option<Retained<NSTrackingArea
     *slot.borrow_mut() = Some(area);
 }
 
+/// Transparent content layer of the island (closed strip or open page). It
+/// draws its own ops at full alpha; the island's opacity fades it, and it
+/// never takes clicks (they go to the island view).
+pub struct ContentIvars {
+    pub page: bool,
+}
+
+define_class!(
+    // SAFETY: NSView may be subclassed; no Drop impl; the only ivar is a bool.
+    #[unsafe(super(NSView, NSResponder, objc2::runtime::NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NoxContentView"]
+    #[ivars = ContentIvars]
+    pub struct ContentView;
+
+    impl ContentView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(isOpaque))]
+        fn is_opaque(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> *mut NSView {
+            // Clicks pass to the island view below.
+            std::ptr::null_mut()
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            if let Some(a) = app::get() {
+                a.draw_content(self.ivars().page);
+            }
+        }
+    }
+);
+
+impl ContentView {
+    pub fn new(mtm: MainThreadMarker, frame: NSRect, page: bool) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ContentIvars { page });
+        // SAFETY: designated NSView initialiser.
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
 impl IslandView {
     pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars::default());
