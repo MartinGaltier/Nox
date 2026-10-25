@@ -309,7 +309,6 @@ impl Painter {
     }
 
     // Wired into the layered island draw next; see island::layers.
-    #[allow(dead_code)]
     /// [`Painter::prepare`] for one layer of a [`LayeredScene`].
     pub fn prepare_group(&mut self, group: &Group, artwork: ArtworkSource) {
         self.prepare_ops(&group.ops, artwork);
@@ -346,7 +345,6 @@ impl Painter {
     }
 
     // Wired into the layered island draw next; see island::layers.
-    #[allow(dead_code)]
     /// [`Painter::paint`] for one layer of a [`LayeredScene`]: drawn at full
     /// alpha, the layer's opacity is applied by its caller.
     pub fn paint_group(&mut self, group: &Group, artwork: ArtworkSource) {
