@@ -342,6 +342,7 @@ dependencies = [
  "dispatch2",
  "libc",
  "log",
+ "nox-audio",
  "nox-core",
  "objc2",
  "objc2-app-kit",
