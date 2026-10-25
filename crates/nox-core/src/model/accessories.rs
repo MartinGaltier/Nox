@@ -30,7 +30,7 @@ pub struct Accessory {
     pub battery: Reading<Vec<BatteryPart>>,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct AccessoriesState {
     /// Bluetooth permission (IOBluetooth: AirPods parts, connection state).
     /// HID batteries from IORegistry are listed even without it.
