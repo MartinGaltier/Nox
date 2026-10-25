@@ -92,6 +92,7 @@ struct Inner {
     artwork: HashMap<u64, Arc<Vec<u8>>>,
     seek_drag: Option<(f64, f64, f64)>,
     page_shown: Option<Section>,
+    music_visible: bool,
     /// Region selection asked; the overlay opens once watch reports Selecting.
     pending_selection: Option<nox_core::model::watch::WatchTrigger>,
     /// Damage of the last relayout, consumed when invalidating the view.
@@ -181,6 +182,7 @@ impl App {
                 artwork: HashMap::new(),
                 seek_drag: None,
                 page_shown: None,
+                music_visible: false,
                 pending_selection: None,
                 damage: None,
                 dragging_files: false,
@@ -472,6 +474,19 @@ impl App {
             i.page_shown = shown;
             changed.then_some(shown).flatten()
         };
+        // Music page visibility (the module may sample levels only then).
+        let music_now = shown == Some(Section::Music);
+        let music_changed = {
+            let mut i = self.inner.borrow_mut();
+            let c = i.music_visible != music_now;
+            i.music_visible = music_now;
+            c
+        };
+        if music_changed {
+            use nox_core::model::music::MusicCommand;
+            self.hub
+                .send(Command::Music(MusicCommand::Visible(music_now)));
+        }
         match appeared {
             Some(Section::Shortcuts) => {
                 use nox_core::model::shortcuts::ShortcutCommand;

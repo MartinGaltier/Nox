@@ -65,7 +65,9 @@ Référence : Vorssaint `e916961` (voir docs/REFERENCE.md). Statuts : **à faire
 | Raccourcis | contrôles volume/muet/luminosité/micro (RefreshControls à l’ouverture), actions rapides (corbeille confirmée, pas de « Ne pas déranger »), raccourcis Raccourcis.app, dernier résultat | contrôle absent grisé avec la raison |
 | Captures | vignettes réduites (jamais l’image pleine taille gardée en mémoire), ouvrir / afficher / copier l’image / corbeille, Refresh à l’ouverture | dossier refusé (Fichiers et dossiers) / « Aucune capture récente » |
 | Bloc-notes | NSTextView natif ; le panneau ne peut devenir clé que pendant l’édition et rend le clavier à l’app au premier plan ensuite ; SetText à chaque modification, texte jamais journalisé, Effacer confirmé | erreur d’écriture / texte tronqué affichés |
-| Presse-papiers | liste (aperçu, app source, taille), restaurer / retirer / tout effacer ; mémoire seulement | vide / module à venir |
+| Presse-papiers | liste (aperçu, app source, taille), restaurer / retirer / tout effacer ; mémoire seulement | accès au collage non déterminé (bouton Autoriser → une lecture, invite macOS une fois) / refusé (explication) / vide |
+| Accessoires (Bluetooth) | bouton « Autoriser le Bluetooth » si non déterminé, « Ouvrir les Réglages Système » si refusé ; batteries IORegistry affichées sans autorisation | — |
+| Musique (sources) | sélecteur de lecteur quand plusieurs publient (lecteur préféré enregistré), `MusicCommand::Visible` à l’ouverture/fermeture de la page, réglages pochettes en ligne et niveaux audio réels, purge des caches | — |
 
 Fenêtre **Moniteur système** : cœurs P/E, GPU, capteurs, mémoire/pression/swap, batterie (santé, cycles,
 autonomie, flux), puissance, réseau (↓/↑ + historique), disques, ventilateurs — historiques bornés avec trous.
@@ -101,9 +103,19 @@ autonomie, flux), puissance, réseau (↓/↑ + historique), disques, ventilateu
 * **Avec tous les vrais modules** (main c0aa292 fusionné) : bande compacte « agent qui travaille » pilotée par la session Claude réelle, page Agents (forfaits Pro/Plus, coûts « estimé », fenêtre réinitialisée affichée « … »), Raccourcis avec les vrais niveaux volume/luminosité/muet, Calendrier en attente d’autorisation (bouton Autoriser), Musique « Rien en lecture », Système/Moniteur avec les mesures M2. Réglages : 6 onglets, aucun contrôle hors champ.
 * CPU, build release, vrais modules (accessoires coupés), îlot compact au repos : 0,52 s sur 120 s (≈ 0,4 %, threads des modules : agents qui lisent les journaux de la session en cours, metrics) ; échantillon `sample` : thread principal (UI) 100 % en attente (`mach_msg`).
 
+## Vérification finale (build release, réglages par défaut, accessoires actifs)
+
+| Configuration | Thread principal (`sample`) | CPU au repos (`ps`) | RSS | Threads |
+|---|---|---|---|---|
+| Réglages par défaut | inactif dans 1365/1369 échantillons, aucun gel | 1,70 s / 120 s (≈ 1,4 %) | 55 Mo | 19 |
+| Défaut, module agents coupé | — | 1,27 s / 120 s (≈ 1,1 %) | 55 Mo | 18 |
+| Interface seule (tous modules coupés) | inactif | 0,00 s / 120 s, 0 réveil | — | — |
+
+Le coût « au repos » mesuré avec les modules ne vient pas de l’interface : il vient des threads des modules. Pendant ces mesures, le module agents relit les journaux que la session Claude de l’agent écrit en continu : ce n’est pas un vrai repos. Le gel IOBluetooth (accessoires) est corrigé sur main (29ae247) et ne se reproduit plus.
+
 ## Limites
 
-* **Blocage hors UI signalé à integrations** : le module accessoires appelle `+[IOBluetoothDevice pairedDevices]` sur le thread principal ; `IOBluetoothCoreBluetoothCoordinator init` y attend un sémaphore indéfiniment et l’app entière se fige au lancement (processus sans autorisation Bluetooth). Vérifications faites avec ce module coupé.
+* Gel IOBluetooth au lancement (module accessoires) : signalé, corrigé par integrations (29ae247), revérifié en release.
 * `screencapture` échoue (« could not create image from display ») : le processus de l’agent n’a pas l’autorisation Enregistrement de l’écran. Les captures internes ne montrent pas l’îlot superposé à la vraie encoche : à valider à l’œil.
 * Aucune entrée synthétique possible (Accessibilité non accordée) : survol, clic, balayage, glisser-déposer et overlay de sélection ne sont couverts que par les tests unitaires.
 * Le texte des contrôles standard de la fenêtre Réglages n’est pas rendu hors écran : vérifiée par rapport de mise en page, pas visuellement.
