@@ -273,6 +273,7 @@ pub enum Damage {
 }
 
 pub fn damage(old: &Scene, new: &Scene) -> Damage {
+    let _p = crate::perf::Probe::new("damage");
     if old.ops.len() != new.ops.len() {
         return Damage::All;
     }
