@@ -281,6 +281,22 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             m.automation,
             PermissionState::NotDetermined | PermissionState::Denied
         );
+    if m.players.len() > 1 && !needs_automation {
+        let pr = Rect::new(main.x, row.max_y() + 8.0, main.w, 20.0);
+        let n = m.players.len().min(4) as f64;
+        let w = ((pr.w - 6.0 * (n - 1.0)) / n).min(120.0);
+        let followed = np.player.as_ref().map(|p| p.bundle_id.as_str());
+        for (i, p) in m.players.iter().take(4).enumerate() {
+            pill(
+                s,
+                cx,
+                Rect::new(pr.x + i as f64 * (w + 6.0), pr.y, w, pr.h),
+                &p.name,
+                followed == Some(p.bundle_id.as_str()),
+                Action::PreferPlayer(p.bundle_id.clone()),
+            );
+        }
+    }
     if needs_automation {
         pill(
             s,
@@ -465,8 +481,8 @@ mod tests {
                     ],
                     source: "LRCLIB".into(),
                 }),
-                levels: vec![],
-                levels_measured: false,
+                // `levels` and fields added later (e.g. `players`) take defaults.
+                ..Default::default()
             }),
             ..Default::default()
         }

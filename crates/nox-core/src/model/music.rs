@@ -112,6 +112,8 @@ pub enum MusicCommand {
     RequestAutomation,
     /// Delete every cached lyric (settings "purge").
     ClearLyricsCache,
+    /// The music section is (not) on screen: gates live audio levels.
+    Visible(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -130,6 +132,9 @@ pub struct MusicSettings {
     pub track_change_alert: bool,
     /// Look up a cover for browser playback that publishes none (network).
     pub browser_artwork: bool,
+    /// Real audio levels for the visualiser (Core Audio tap; asks for
+    /// system audio recording permission). Off by default.
+    pub live_levels: bool,
 }
 
 impl Default for MusicSettings {
@@ -143,6 +148,7 @@ impl Default for MusicSettings {
             include_other_players: true,
             track_change_alert: true,
             browser_artwork: false,
+            live_levels: false,
         }
     }
 }

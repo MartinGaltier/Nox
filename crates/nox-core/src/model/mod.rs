@@ -3,7 +3,7 @@
 //! Ownership (edit only your files; changes elsewhere go through the coordinator):
 //! - Intégrations: music, calendar, notifications, accessories, downloads, files, shortcuts, camera, captures, scratchpad, clipboard
 //! - Activités: agents, watch, timers, companion
-//! - Mesures: metrics
+//! - Mesures: metrics, mixer
 //! - Énergie: power
 
 pub mod accessories;
@@ -16,6 +16,7 @@ pub mod companion;
 pub mod downloads;
 pub mod files;
 pub mod metrics;
+pub mod mixer;
 pub mod music;
 pub mod notifications;
 pub mod power;

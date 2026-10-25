@@ -11,26 +11,26 @@ Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE
 
 | ID | Fonction | Comportement Vorssaint | Apps/services | Permissions / dépendances | Implémentation Nox | Critères de validation | Statut |
 |---|---|---|---|---|---|---|---|
-| A1 | Fenêtre îlot dans l'encoche | Panneau au-dessus de la barre de menus, épouse la découpe caméra (silhouette), noir | — | aucune | `nox-ui` NSPanel non activant, niveau statusBar+1, rendu CG | Capture d'écran : îlot aligné sur l'encoche M2, pas de liseré | à faire |
-| A2 | États compact / déplié | Compact autour de l'encoche (activité en cours), déplié au survol/clic | — | — | Machine d'états + ressort | Survol → déplie ; sortie → replie après délai (`notchCloseDelay`) | à faire |
-| A3 | Survol, délai, clic | `notchHoverExpands`, `notchHoverDelay`, `notchOpenOnHover` | — | — | Tracking area, délai réglable | Réglages appliqués sans redémarrage | à faire |
-| A4 | Animations fluides | Ressort SwiftUI, fondu contenu | — | — | Interpolation ressort Rust 60–120 Hz uniquement pendant l'animation | Aucune frame timer au repos (CPU ≈ 0) | à faire |
-| A5 | Aucun vol de focus | Panneau non activant | — | — | `NSWindowStyleMaskNonactivatingPanel`, `becomesKeyOnlyIfNeeded` | L'app au premier plan garde le focus clavier après clic sur l'îlot | à faire |
-| A6 | Écrans sans encoche | Îlot simulé (`capsule`), choix d'écran `notchDisplay` (auto/intégré/principal/pointeur/tous) | — | — | `DisplayChoice`, encoche simulée | Écran externe : capsule centrée ; changement d'écran reconfiguré | à faire |
-| A7 | Changement d'écran / résolution | Repositionnement | — | — | `NSApplicationDidChangeScreenParametersNotification` | Brancher/débrancher écran : îlot correct | à faire |
-| A8 | Plein écran | `notchHideInFullscreen` masque l'îlot | — | — | Détection app plein écran sur l'écran de l'îlot | Vidéo plein écran : îlot masqué, revient après | à faire |
-| A9 | Sections activables / réorganisables | `notchModuleOrder`, `notchHiddenModules`, `notchHomeModule`, `notchReturnHome` | — | — | `IslandSettings.sections` | Désactiver une section la retire et arrête son module | à faire |
-| A10 | Gestes défilement / balayage | `notchGesturesEnabled` : balayage horizontal = section, défilement = volume/progression, `notchHapticFeedback` | — | — | `scrollWheel:` + `NSHapticFeedbackManager` | Balayage trackpad change de section | à faire |
-| A11 | Alertes / activités en direct | Notices temporaires (fin DL, agent, minuteur, batterie, accessoire…) `notchOpensActivity` | — | — | `Hub::push_alert` + file prioritaire | Alerte visible TTL puis retour | à faire |
-| A12 | Barre des menus | Icône + menu (ouvrir réglages, maintien éveillé, quitter) | — | — | `NSStatusItem` | Menu fonctionnel | à faire |
-| A13 | Réglages | Pages par fonctionnalité | — | — | Fenêtre AppKit native | Chaque réglage persiste (settings.json) | à faire |
-| A14 | Arrêt des collectes à la désactivation | Fonctionnalités désinstallables | — | — | `ModuleManager` stop/join | Test auto `disabling_a_module_stops_it` + `ps -M` threads | implémentée (core) |
-| A15 | Masqué dans les captures | `notchHideInCaptures` / `notchShowInCaptures` | — | — | `NSWindowSharingNone` optionnel | Capture d'écran sans îlot si réglé | à faire |
-| A16 | Masquer jusqu'au survol | `notchHideUntilHover`, `notchHiddenShowsActivity` | — | — | Option UI | — | à faire |
-| A17 | Taille / silhouette / contour / translucide | `notchSize` (compact/spacieux/perso), `notchSilhouette`, `notchOutlineEnabled`, `notchTranslucentBackground`, Liquid Glass | — | — | Réglages d'apparence | — | à faire |
-| A18 | Écran verrouillé | `notchLockScreen` : îlot sur l'écran de verrouillage + sons | — | API privée SkyLight (fenêtre au-dessus du lock) | À évaluer | — | à faire |
-| A19 | Raccourci global | `notchShortcut` ouvre l'îlot | — | — | Carbon `RegisterEventHotKey` (pas d'AX) | — | à faire |
-| A20 | Contenu au repos | `notchIdleContent` (rien/batterie/musique/agents) | — | — | Réglage | — | à faire |
+| A1 | Fenêtre îlot dans l'encoche | Panneau au-dessus de la barre de menus, épouse la découpe caméra (silhouette), noir | — | aucune | `nox-ui` NSPanel non activant, niveau statusBar+1, rendu CG | Capture d'écran : îlot aligné sur l'encoche M2, pas de liseré | implémentée — géométrie vérifiée sur le M2 (encoche réelle) ; superposition visuelle non capturée |
+| A2 | États compact / déplié | Compact autour de l'encoche (activité en cours), déplié au survol/clic | — | — | Machine d'états + ressort | Survol → déplie ; sortie → replie après délai (`notchCloseDelay`) | implémentée — survol physique non testé |
+| A3 | Survol, délai, clic | `notchHoverExpands`, `notchHoverDelay`, `notchOpenOnHover` | — | — | Tracking area, délai réglable | Réglages appliqués sans redémarrage | implémentée — survol/clic physiques non testés |
+| A4 | Animations fluides | Ressort SwiftUI, fondu contenu | — | — | Interpolation ressort Rust 60–120 Hz uniquement pendant l'animation | Aucune frame timer au repos (CPU ≈ 0) | testée (CPU UI au repos 0,00 s/120 s ; app complète ≈ 1 % d'un cœur) |
+| A5 | Aucun vol de focus | Panneau non activant | — | — | `NSWindowStyleMaskNonactivatingPanel`, `becomesKeyOnlyIfNeeded` | L'app au premier plan garde le focus clavier après clic sur l'îlot | implémentée — vérifiée par état (jamais key/main, app jamais active) ; clic physique non testé |
+| A6 | Écrans sans encoche | Îlot simulé (`capsule`), choix d'écran `notchDisplay` (auto/intégré/principal/pointeur/tous) | — | — | `DisplayChoice`, encoche simulée | Écran externe : capsule centrée ; changement d'écran reconfiguré | implémentée — écran externe non testé |
+| A7 | Changement d'écran / résolution | Repositionnement | — | — | `NSApplicationDidChangeScreenParametersNotification` | Brancher/débrancher écran : îlot correct | implémentée — branchement d'écran non testé |
+| A8 | Plein écran | `notchHideInFullscreen` masque l'îlot | — | — | Détection app plein écran sur l'écran de l'îlot | Vidéo plein écran : îlot masqué, revient après | implémentée — plein écran non testé physiquement |
+| A9 | Sections activables / réorganisables | `notchModuleOrder`, `notchHiddenModules`, `notchHomeModule`, `notchReturnHome` | — | — | `IslandSettings.sections` | Désactiver une section la retire et arrête son module | implémentée |
+| A10 | Gestes défilement / balayage | `notchGesturesEnabled` : balayage horizontal = section, défilement = volume/progression, `notchHapticFeedback` | — | — | `scrollWheel:` + `NSHapticFeedbackManager` | Balayage trackpad change de section | implémentée — geste trackpad physique non testé |
+| A11 | Alertes / activités en direct | Notices temporaires (fin DL, agent, minuteur, batterie, accessoire…) `notchOpensActivity` | — | — | `Hub::push_alert` + file prioritaire | Alerte visible TTL puis retour | implémentée |
+| A12 | Barre des menus | Icône + menu (ouvrir réglages, maintien éveillé, quitter) | — | — | `NSStatusItem` | Menu fonctionnel | implémentée |
+| A13 | Réglages | Pages par fonctionnalité | — | — | Fenêtre AppKit native | Chaque réglage persiste (settings.json) | implémentée (6 onglets, aucun contrôle hors champ) |
+| A14 | Arrêt des collectes à la désactivation | Fonctionnalités désinstallables | — | — | `ModuleManager` stop/join | Test auto `disabling_a_module_stops_it` + `ps -M` threads | implémentée (core, testée en automatique) |
+| A15 | Masqué dans les captures | `notchHideInCaptures` / `notchShowInCaptures` | — | — | `NSWindowSharingNone` optionnel | Capture d'écran sans îlot si réglé | implémentée |
+| A16 | Masquer jusqu'au survol | `notchHideUntilHover`, `notchHiddenShowsActivity` | — | — | Option UI | — | implémentée |
+| A17 | Taille / silhouette / contour / translucide | `notchSize` (compact/spacieux/perso), `notchSilhouette`, `notchOutlineEnabled`, `notchTranslucentBackground`, Liquid Glass | — | — | Réglages d'apparence | — | implémentée |
+| A18 | Écran verrouillé | `notchLockScreen` : îlot sur l'écran de verrouillage + sons | — | API privée SkyLight (fenêtre au-dessus du lock) | À évaluer | — | bloquée (fenêtre sur l'écran verrouillé = API privée SkyLight, non retenue) |
+| A19 | Raccourci global | `notchShortcut` ouvre l'îlot | — | — | Carbon `RegisterEventHotKey` (pas d'AX) | — | implémentée |
+| A20 | Contenu au repos | `notchIdleContent` (rien/batterie/musique/agents) | — | — | Réglage | — | implémentée |
 
 ## B. Musique
 
@@ -83,12 +83,12 @@ Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE
 | E4 | Outils de fichiers (étagère) | Déposer des fichiers sur l'îlot, AirDrop, partager, compresser, `notchDragReveal` | Finder | — | Drag & drop NSPanel | Glisser un fichier → apparaît, AirDrop ouvre | implémentée ; compression testée |
 | E5 | Aperçu caméra | Miroir dans l'îlot | — | CAM | AVCaptureSession + preview layer, démarré à l'ouverture seulement | Voyant caméra s'allume seulement page ouverte | implémentée — non testée (permission + UI) |
 | E6 | Raccourcis / actions rapides | Accès rapide (verrouiller, capture, etc.), `notchQuickAccess*` | Raccourcis.app | — | `nox-integrations::shortcuts` | Chaque action exécutée | implémentée partielle (Concentration/NPD sans API publique) |
-| E7 | Contrôles volume / luminosité / clavier / micro / source | `notchVolume`, `Brightness`, `KeyboardLight`, `Microphone`, `InputSource`, ordre `notchControlOrder` | — | — | CoreAudio, DisplayServices (privé) | Curseurs agissent | testée partielle (volume, micro, luminosité ; clavier/source à faire) |
-| E8 | HUD volume/luminosité dans l'îlot | `NotchVolumeKeyGate` | — | AX (event tap) | À évaluer | — | à faire (évalué) |
+| E7 | Contrôles volume / luminosité / clavier / micro / source | `notchVolume`, `Brightness`, `KeyboardLight`, `Microphone`, `InputSource`, ordre `notchControlOrder` | — | — | CoreAudio, DisplayServices (privé) | Curseurs agissent | implémentée ; volume/micro/luminosité testés, rétroéclairage clavier vérifié (sélecteurs macOS 27), sources d'entrée implémentées |
+| E8 | HUD volume/luminosité dans l'îlot | `NotchVolumeKeyGate` | — | AX (event tap) | À évaluer | — | implémentée (HUD dans l'îlot via écouteurs CoreAudio/DisplayServices, HUD système conservé ; notification luminosité testée) |
 | E9 | Mixeur par app | section `mixer` | — | process taps CoreAudio | hors priorité (utilitaire séparé) | — | à faire (évalué : capture audio) |
-| E10 | Presse-papiers dans l'îlot | section `clipboard` | — | — | Historique local | — | à faire (évalué) |
-| E11 | Captures récentes | section `captures` | — | — | Dossier captures | — | implémentée (fixtures ; vraie capture non testée, module désactivé par défaut) |
-| E12 | Bloc-notes | section `scratchpad` | — | — | Fichier local | — | implémentée (testée sur fichier temporaire) |
+| E10 | Presse-papiers dans l'îlot | section `clipboard` | — | — | Historique local | — | implémentée côté UI ; module en cours (Intégrations) |
+| E11 | Captures récentes | section `captures` | — | — | Dossier captures | — | implémentée (fixtures + rendu) ; vraie capture non testée, module désactivé par défaut |
+| E12 | Bloc-notes | section `scratchpad` | — | — | Fichier local | — | implémentée (fichier temporaire testé, éditeur natif) |
 
 ## F. Moniteur système (îlot + fenêtre)
 

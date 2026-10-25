@@ -30,10 +30,11 @@ pub enum ModuleId {
     Captures,
     Scratchpad,
     Clipboard,
+    Mixer,
 }
 
 impl ModuleId {
-    pub const ALL: [ModuleId; 17] = [
+    pub const ALL: [ModuleId; 18] = [
         Self::Music,
         Self::Calendar,
         Self::Notifications,
@@ -51,6 +52,7 @@ impl ModuleId {
         Self::Captures,
         Self::Scratchpad,
         Self::Clipboard,
+        Self::Mixer,
     ];
     pub fn key(self) -> &'static str {
         match self {
@@ -71,6 +73,7 @@ impl ModuleId {
             Self::Captures => "captures",
             Self::Scratchpad => "scratchpad",
             Self::Clipboard => "clipboard",
+            Self::Mixer => "mixer",
         }
     }
 }

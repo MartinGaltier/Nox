@@ -714,6 +714,8 @@ impl Engine {
                 lyrics::clear_cache(&lyrics::cache_dir());
                 artwork::clear_cache(&artwork::cache_dir());
             }
+            // Live levels (nox-audio, B7) are wired by Agent Intégrations.
+            MusicCommand::Visible(_) => {}
             MusicCommand::OpenPlayer => {
                 let pid = self.last_line.as_ref().and_then(|l| l.pid);
                 let bundle = self
