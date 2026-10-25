@@ -95,3 +95,8 @@ Vérification release (`main` fd3f3e0, réglages par défaut, données isolées)
 **Non vérifié avec de vrais événements** (Accessibilité non accordée au terminal) : survol,
 réentrée par la zone chaude, clics dans la barre des menus à côté de l'encoche, focus clavier,
 centrage à l'écran. Test manuel fourni : `scratchpad/manual/check.sh` (voir rapport).
+
+Note d'exactitude : le message du commit `8e61ea1` (compagnon) affirme un coût « réduit à presque
+rien ». C'est une surestimation : le gain n'a été mesuré que combiné avec le correctif agents
+(`f7c94da`) — 459 → 350 réveils d'interruption par 120 s, 42 → 36 publications, session Claude
+active pendant la mesure. L'historique n'a pas été réécrit.
