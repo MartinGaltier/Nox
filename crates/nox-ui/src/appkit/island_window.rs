@@ -208,6 +208,42 @@ define_class!(
 );
 
 define_class!(
+    // SAFETY: NSPanel may be subclassed; no Drop impl, no ivars.
+    #[unsafe(super(NSPanel, NSWindow, NSResponder, objc2::runtime::NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NoxHotZonePanel"]
+    pub struct HotZonePanel;
+
+    impl HotZonePanel {
+        // Never key, never main: the hot zone must not take the keyboard,
+        // even while the scratchpad editor is on screen.
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(canBecomeMainWindow))]
+        fn can_become_main(&self) -> bool {
+            false
+        }
+    }
+);
+
+impl HotZonePanel {
+    pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        // SAFETY: designated NSWindow initialiser with valid arguments; the same
+        // non-activating borderless style as the island panel.
+        unsafe {
+            msg_send![super(this), initWithContentRect: frame,
+                styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+                backing: NSBackingStoreType::Buffered,
+                defer: false]
+        }
+    }
+}
+
+define_class!(
     // SAFETY: NSView may be subclassed; no Drop impl; ivars are main-thread only.
     #[unsafe(super(NSView, NSResponder, objc2::runtime::NSObject))]
     #[thread_kind = MainThreadOnly]

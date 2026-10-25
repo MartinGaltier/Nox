@@ -2,7 +2,7 @@
 //! auxiliary windows. Woken by the hub (coalesced); timers run only while
 //! something on screen changes (animation, countdown, hover delay, alert TTL).
 
-use super::island_window::{HotZoneView, IslandPanel, IslandView};
+use super::island_window::{HotZonePanel, HotZoneView, IslandPanel, IslandView};
 use super::painter::Painter;
 use super::util::{ActionTarget, Observer, Timer, mono, ns_rect};
 use super::{files, haptics, screens};
@@ -188,7 +188,7 @@ pub struct App {
     inner: RefCell<Inner>,
     panel: Retained<IslandPanel>,
     view: Retained<IslandView>,
-    hot_panel: Retained<IslandPanel>,
+    hot_panel: Retained<HotZonePanel>,
     hot_view: Retained<HotZoneView>,
     observers: RefCell<Vec<Observer>>,
     pub status: RefCell<Option<super::status::StatusBar>>,
@@ -238,7 +238,7 @@ impl App {
         configure_panel(&panel, &view, &settings);
         // Clicks pass through until the pointer is over the shape.
         panel.setIgnoresMouseEvents(true);
-        let hot_panel = IslandPanel::new(mtm, ns_rect(hot));
+        let hot_panel = HotZonePanel::new(mtm, ns_rect(hot));
         let hot_view = HotZoneView::new(mtm, ns_rect(Rect::new(0.0, 0.0, hot.w, hot.h)));
         configure_hot_panel(&hot_panel, &hot_view, &settings);
 
@@ -343,8 +343,7 @@ impl App {
                 i.model.machine.hold(true, mono());
             }
         }
-        self.hot_panel.orderFrontRegardless();
-        self.panel.orderFrontRegardless();
+        self.show_hot_zone();
         self.on_wake();
         self.update_fullscreen();
         #[cfg(debug_assertions)]
@@ -519,6 +518,21 @@ impl App {
         self.panel.setHasShadow(expanded);
     }
 
+    /// The hot zone only takes the pointer while hover expands the island and
+    /// the island is not hidden for a fullscreen app. It stays below the island.
+    fn show_hot_zone(&self) {
+        let on = {
+            let i = self.inner.borrow();
+            i.settings.island.expand_on_hover && !i.hidden_fullscreen
+        };
+        if on {
+            self.hot_panel.orderFrontRegardless();
+            self.panel.orderFrontRegardless();
+        } else {
+            self.hot_panel.orderOut(None);
+        }
+    }
+
     /// Sizes the fixed window for the current screen and settings. Called only
     /// when either changes, never per frame.
     fn fit_window(&self) {
@@ -526,6 +540,7 @@ impl App {
         self.hot_panel.setFrame_display(ns_rect(hot), false);
         self.hot_view
             .setFrame(ns_rect(Rect::new(0.0, 0.0, hot.w, hot.h)));
+        self.show_hot_zone();
         let frame = {
             let i = self.inner.borrow();
             i.model
@@ -1196,8 +1211,7 @@ impl App {
                 self.panel.orderOut(None);
                 self.hot_panel.orderOut(None);
             } else {
-                self.hot_panel.orderFrontRegardless();
-                self.panel.orderFrontRegardless();
+                self.show_hot_zone();
             }
             self.update();
         }
@@ -1260,7 +1274,7 @@ impl App {
 }
 
 /// The hot zone window: same level and spaces as the island, never shadowed.
-fn configure_hot_panel(panel: &IslandPanel, view: &HotZoneView, s: &Settings) {
+fn configure_hot_panel(panel: &HotZonePanel, view: &HotZoneView, s: &Settings) {
     panel.setOpaque(false);
     panel.setBackgroundColor(Some(&NSColor::clearColor()));
     panel.setHasShadow(false);
