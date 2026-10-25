@@ -300,17 +300,9 @@ impl Painter {
         unsafe { s.drawWithRect_options_attributes_context(rr, opts, Some(&attrs), None) };
     }
 
-    /// Creates what `scene` will need (decoded covers and their thumbnails,
+    /// Creates what a layer will need (decoded covers and their thumbnails,
     /// symbols, file thumbnails, text attributes) without drawing, so the
     /// first draw of new content costs the same as the rest.
-    #[allow(dead_code)] // the island draws groups; kept for whole-scene callers
-    pub fn prepare(&mut self, scene: &Scene, artwork: ArtworkSource) {
-        self.prepare_ops(&scene.ops, artwork);
-    }
-
-    // Wired into the layered island draw next; see island::layers.
-    #[allow(dead_code)]
-    /// [`Painter::prepare`] for one layer of a [`LayeredScene`].
     pub fn prepare_group(&mut self, group: &Group, artwork: ArtworkSource) {
         self.prepare_ops(&group.ops, artwork);
     }
@@ -345,8 +337,6 @@ impl Painter {
         self.paint_ops(&scene.ops, artwork);
     }
 
-    // Wired into the layered island draw next; see island::layers.
-    #[allow(dead_code)]
     /// [`Painter::paint`] for one layer of a [`LayeredScene`]: drawn at full
     /// alpha, the layer's opacity is applied by its caller.
     pub fn paint_group(&mut self, group: &Group, artwork: ArtworkSource) {
@@ -801,11 +791,12 @@ mod bench {
             for frame in 0..240 {
                 model.motion.step(1.0 / 120.0);
                 let t = Instant::now();
-                let scene = model.scene(&state, &settings, now, None);
+                let layers = model.layers(&state, &settings, now, None);
                 build.push(t.elapsed().as_secs_f64() * 1e6);
-                ops = scene.ops.len();
+                ops = layers.closed.ops.len() + layers.page.ops.len();
                 let t = Instant::now();
-                painter.paint(&scene, &src);
+                painter.paint_group(&layers.closed, &src);
+                painter.paint_group(&layers.page, &src);
                 let us = t.elapsed().as_secs_f64() * 1e6;
                 if frame == 0 {
                     first = us;
@@ -831,7 +822,9 @@ mod bench {
                 .motion
                 .snap(model.motion.w.target, model.motion.h.target, true);
             let t = Instant::now();
-            painter.prepare(&model.scene(&state, &settings, now, None), &src);
+            let layers = model.layers(&state, &settings, now, None);
+            painter.prepare_group(&layers.closed, &src);
+            painter.prepare_group(&layers.page, &src);
             println!("prepare {:.0} µs", t.elapsed().as_secs_f64() * 1e6);
             model.machine.pointer(false, now);
             model.machine.tick(now + 3.0);
@@ -908,9 +901,23 @@ mod tests {
             radius: 0.0,
         });
         let mut p = Painter::default();
-        p.prepare(&scene, &src);
+        p.prepare_group(
+            &Group::new(
+                scene.clone(),
+                crate::geom::Size::default(),
+                Point::default(),
+            ),
+            &src,
+        );
         assert_eq!((p.symbols.len(), p.texts.len(), p.artwork.len()), (1, 1, 1));
-        p.prepare(&scene, &src);
+        p.prepare_group(
+            &Group::new(
+                scene.clone(),
+                crate::geom::Size::default(),
+                Point::default(),
+            ),
+            &src,
+        );
         assert_eq!((p.symbols.len(), p.texts.len(), p.artwork.len()), (1, 1, 1));
         // A cover resized within its bucket (an animating rect) is reused.
         let before = p
@@ -927,7 +934,14 @@ mod tests {
             "Titre",
             TextStyle::new(11.0),
         );
-        p.prepare(&scene, &src);
+        p.prepare_group(
+            &Group::new(
+                scene.clone(),
+                crate::geom::Size::default(),
+                Point::default(),
+            ),
+            &src,
+        );
         assert_eq!(p.texts.len(), 2);
     }
 

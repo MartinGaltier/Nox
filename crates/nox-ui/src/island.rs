@@ -8,7 +8,7 @@ use crate::geom::{Point, Size};
 use crate::geometry::NotchGeometry;
 use crate::gesture::{GestureAction, GestureTracker, ScrollInput};
 use crate::machine::{Machine, MachineConfig, Mode};
-use crate::scene::{Group, LayeredScene, MusicPanel, Op, Scene};
+use crate::scene::{Group, LayeredScene, MusicPanel, Scene};
 use crate::spring::IslandMotion;
 use crate::views::{self, Ctx};
 use nox_core::{Alert, IslandState, Section, Settings};
@@ -141,99 +141,6 @@ impl IslandModel {
     /// Size currently drawn.
     pub fn size(&self) -> Size {
         Size::new(self.motion.w.value.max(0.0), self.motion.h.value.max(0.0))
-    }
-
-    /// Scene for the current frame.
-    pub fn scene(
-        &self,
-        state: &IslandState,
-        settings: &Settings,
-        now: f64,
-        hover: Option<Point>,
-    ) -> Scene {
-        let _p = crate::perf::Probe::new("scene");
-        let size = self.size();
-        let mut s = Scene::default();
-        let open = self.motion.open.value.clamp(0.0, 1.0);
-        // Closed content fades out as the island opens and vice versa.
-        if open < 1.0 {
-            s.ops.push(Op::Alpha(1.0 - open));
-            let target = self.surface_size(&self.surface, settings);
-            let settled_size = (size.w - target.w).abs() < 1.0 && (size.h - target.h).abs() < 1.0;
-            match &self.surface {
-                Surface::Strip(a) => {
-                    views::compact::strip(
-                        &mut s,
-                        &self.geometry,
-                        size,
-                        a,
-                        now,
-                        &settings.companion,
-                    );
-                    s.hit(
-                        crate::geom::Rect::new(0.0, 0.0, size.w, size.h),
-                        crate::scene::Action::Open(views::compact::section_of(a)),
-                        "Ouvrir",
-                    );
-                }
-                Surface::Notice(a) if settled_size => {
-                    views::compact::notice(&mut s, &self.geometry, size, a)
-                }
-                _ => {}
-            }
-        }
-        if open > 0.0 {
-            let hits_before = s.hits.len();
-            if hits_before > 0 {
-                s.hits.clear();
-            }
-            s.ops.push(Op::Alpha(open));
-            if let Some(section) = self.current_section(settings) {
-                let cx = Ctx {
-                    state,
-                    settings,
-                    now,
-                    hover,
-                    scroll: self.scroll.get(&section).copied().unwrap_or(0.0),
-                    music_panel: self.music_panel,
-                    camera_attached: self.camera_attached,
-                };
-                let visible = settings.visible_sections();
-                let content = views::chrome(
-                    &mut s,
-                    &cx,
-                    &self.geometry,
-                    size.w,
-                    size.h,
-                    &visible,
-                    section,
-                );
-                if open > 0.6 {
-                    views::page(&mut s, &cx, content, section);
-                }
-            } else {
-                let r = crate::geom::Rect::new(
-                    0.0,
-                    self.geometry.camera_height,
-                    size.w,
-                    size.h - self.geometry.camera_height,
-                );
-                views::empty(
-                    &mut s,
-                    r,
-                    "square.dashed",
-                    "Aucune section",
-                    "Activez des sections dans les réglages.",
-                );
-                s.hit(r, crate::scene::Action::OpenSettings, "Réglages");
-            }
-            if open < 0.99 {
-                // No clicks on a half-open page.
-                s.hits.clear();
-            }
-        }
-        s.ops.push(Op::Alpha(1.0));
-        s
     }
 
     /// The content as layers, each laid out for its own target size: the
@@ -386,9 +293,23 @@ mod tests {
     use super::*;
     use crate::geom::Rect;
     use crate::geometry::ScreenParams;
+    use crate::scene::Op;
     use nox_core::model::timers::{CountdownTimer, TimerRun, TimersState};
     use nox_core::settings::{IdleContent, IslandSilhouette};
     use nox_core::{AlertKind, ModuleId};
+
+    /// Both layers as one scene, for assertions on text and hits.
+    fn whole(l: &LayeredScene) -> Scene {
+        let mut s = Scene {
+            refresh: l.refresh,
+            ..Default::default()
+        };
+        for g in [&l.closed, &l.page] {
+            s.ops.extend(g.ops.iter().cloned());
+            s.hits.extend(g.hits.iter().cloned());
+        }
+        s
+    }
 
     fn model(settings: &Settings) -> IslandModel {
         let g = NotchGeometry::new(
@@ -421,7 +342,7 @@ mod tests {
         let st = IslandState::default();
         assert!(!m.retarget(&st, &s, 0.0), "nothing to animate at rest");
         assert_eq!(m.size(), Size::new(185.0, 32.0));
-        let scene = m.scene(&st, &s, 0.0, None);
+        let scene = whole(&m.layers(&st, &s, 0.0, None));
         assert!(scene.refresh.is_none(), "no timer at rest");
         assert!(scene.hits.is_empty());
     }
@@ -436,7 +357,7 @@ mod tests {
         assert!(m.retarget(&st, &s, 0.3));
         settle(&mut m);
         assert_eq!(m.size().w, 520.0);
-        let scene = m.scene(&st, &s, 0.3, None);
+        let scene = whole(&m.layers(&st, &s, 0.3, None));
         assert!(scene.has_text("Musique"), "{:?}", scene.texts());
         assert!(!scene.hits.is_empty());
     }
@@ -552,6 +473,10 @@ mod tests {
         let half = m.layers(&st, &s, 0.0, None);
         assert!(half.page.hits.is_empty(), "no clicks on a half-open page");
         assert_eq!(half.page.ops, open.page.ops, "same content at any opacity");
+        assert_eq!(
+            half.page.generation, open.page.generation,
+            "no redraw during the fade"
+        );
     }
 
     #[test]
