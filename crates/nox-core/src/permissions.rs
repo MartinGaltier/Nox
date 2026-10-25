@@ -13,6 +13,8 @@ pub enum Permission {
     ScreenRecording,
     Bluetooth,
     Notifications,
+    /// System audio recording (Core Audio process taps: live levels, mixer).
+    SystemAudio,
     /// Administrator approval to install the closed-lid helper (one time).
     AdminHelperInstall,
 }
@@ -39,6 +41,7 @@ impl Permission {
             Permission::ScreenRecording => "Enregistrement de l’écran",
             Permission::Bluetooth => "Bluetooth",
             Permission::Notifications => "Notifications",
+            Permission::SystemAudio => "Enregistrement audio du système",
             Permission::AdminHelperInstall => "Assistant administrateur (capot fermé)",
         }
     }
@@ -68,6 +71,10 @@ impl Permission {
             }
             Permission::Notifications => {
                 "x-apple.systempreferences:com.apple.Notifications-Settings.extension"
+            }
+            // Anchor not verified on macOS 27 (no tap was ever created here).
+            Permission::SystemAudio => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture"
             }
             Permission::AdminHelperInstall => {
                 "x-apple.systempreferences:com.apple.LoginItems-Settings.extension"
