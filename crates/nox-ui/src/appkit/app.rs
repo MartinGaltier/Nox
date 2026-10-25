@@ -2,7 +2,7 @@
 //! auxiliary windows. Woken by the hub (coalesced); timers run only while
 //! something on screen changes (animation, countdown, hover delay, alert TTL).
 
-use super::island_window::{HotZonePanel, HotZoneView, IslandPanel, IslandView};
+use super::island_window::{ContentView, HotZonePanel, HotZoneView, IslandPanel, IslandView};
 use super::painter::Painter;
 use super::util::{ActionTarget, Observer, Timer, mono, ns_rect};
 use super::{files, haptics, screens};
@@ -12,7 +12,7 @@ use crate::geometry::{NotchGeometry, ignores_clicks, island_contains};
 use crate::gesture::{GestureAction, ScrollInput, movement};
 use crate::island::{IslandModel, Surface, machine_config};
 use crate::machine::Mode;
-use crate::scene::{Action, Scene};
+use crate::scene::{Action, Op, Scene};
 use block2::RcBlock;
 use nox_core::model::files::FileCommand;
 use nox_core::model::music::MusicCommand;
@@ -29,7 +29,7 @@ use objc2_app_kit::{
 };
 use objc2_core_graphics::CGContext;
 use objc2_foundation::{NSArray, NSNotificationCenter, NSRunLoop, NSRunLoopCommonModes};
-use objc2_quartz_core::CADisplayLink;
+use objc2_quartz_core::{CADisplayLink, CAShapeLayer, CATransaction};
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::ptr::NonNull;
@@ -176,6 +176,15 @@ struct Inner {
     /// Damage of the last relayout, consumed when invalidating the view.
     damage: Option<crate::scene::Damage>,
     dragging_files: bool,
+    /// Content of the closed strip (0) and of the open page (1), drawn by their layers.
+    content: [LayerContent; 2],
+}
+
+/// Ops of one content layer, and a counter that changes when they do.
+#[derive(Default)]
+struct LayerContent {
+    ops: Vec<Op>,
+    generation: u64,
 }
 
 pub struct App {
@@ -190,6 +199,10 @@ pub struct App {
     view: Retained<IslandView>,
     hot_panel: Retained<HotZonePanel>,
     hot_view: Retained<HotZoneView>,
+    closed_view: Retained<ContentView>,
+    page_view: Retained<ContentView>,
+    closed_mask: Retained<CAShapeLayer>,
+    page_mask: Retained<CAShapeLayer>,
     observers: RefCell<Vec<Observer>>,
     pub status: RefCell<Option<super::status::StatusBar>>,
     pub settings_window: RefCell<Option<super::settings_window::SettingsWindow>>,
@@ -238,6 +251,20 @@ impl App {
         configure_panel(&panel, &view, &settings);
         // Clicks pass through until the pointer is over the shape.
         panel.setIgnoresMouseEvents(true);
+        // Content layers: transparent subviews above the silhouette, each masked to it.
+        let full = ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h));
+        let closed_view = ContentView::new(mtm, full, false);
+        let page_view = ContentView::new(mtm, full, true);
+        let closed_mask = CAShapeLayer::new();
+        let page_mask = CAShapeLayer::new();
+        for (v, m) in [(&closed_view, &closed_mask), (&page_view, &page_mask)] {
+            v.setWantsLayer(true);
+            view.addSubview(v);
+            if let Some(layer) = v.layer() {
+                // SAFETY: the mask is a CAShapeLayer owned by the controller for the app's lifetime.
+                unsafe { layer.setMask(Some(m)) };
+            }
+        }
         let hot_panel = HotZonePanel::new(mtm, ns_rect(hot));
         let hot_view = HotZoneView::new(mtm, ns_rect(Rect::new(0.0, 0.0, hot.w, hot.h)));
         configure_hot_panel(&hot_panel, &hot_view, &settings);
@@ -276,11 +303,16 @@ impl App {
                 pending_selection: None,
                 damage: None,
                 dragging_files: false,
+                content: [LayerContent::default(), LayerContent::default()],
             }),
             panel,
             view,
             hot_panel,
             hot_view,
+            closed_view,
+            page_view,
+            closed_mask,
+            page_mask,
             observers: RefCell::new(vec![]),
             status: RefCell::new(None),
             settings_window: RefCell::new(None),
@@ -509,13 +541,38 @@ impl App {
     /// Places the shape for the size drawn now: its centre stays on the camera
     /// at every frame, inside the fixed window (no window resize while animating).
     fn apply_frame(&self) {
-        let expanded = {
+        let (expanded, open, size, offset, floats, capsule) = {
             let mut i = self.inner.borrow_mut();
             let size = i.model.size();
             i.offset = i.model.geometry.shape_x(size.w) - i.frame.x;
-            i.model.motion.open.value > 0.5
+            let open = i.model.motion.open.value.clamp(0.0, 1.0);
+            let capsule = i.model.capsule_compact();
+            let floats = i.model.geometry.floating_gap;
+            (open > 0.5, open, size, i.offset, floats, capsule)
         };
         self.panel.setHasShadow(expanded);
+        // The silhouette is the island view's own drawing: it follows the size.
+        self.view.setNeedsDisplay(true);
+        // Cross-fade and reveal by layer properties only: no content is redrawn.
+        let shape = super::painter::path(
+            &crate::geometry::island_path(size, floats, capsule),
+            offset,
+            0.0,
+        )
+        .CGPath();
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        let layers = [
+            (&self.closed_view, &self.closed_mask, 1.0 - open),
+            (&self.page_view, &self.page_mask, open),
+        ];
+        for (view, mask, alpha) in layers {
+            mask.setPath(Some(&shape));
+            if let Some(layer) = view.layer() {
+                layer.setOpacity(alpha as f32);
+            }
+        }
+        CATransaction::commit();
     }
 
     /// The hot zone only takes the pointer while hover expands the island and
@@ -588,6 +645,7 @@ impl App {
         if let Some(sec) = section {
             self.inner.borrow_mut().model.clamp_scroll(sec, extent);
         }
+        self.update_layers();
         let expanded_page = self.inner.borrow().model.machine.mode == Mode::Expanded;
         // One-shot refreshes when a page appears (never polled).
         let shown = section.filter(|_| expanded_page);
@@ -746,9 +804,10 @@ impl App {
 
     // ---------- drawing ----------
 
+    /// Draws the silhouette only; the content is in the content layers.
     pub fn draw_island(&self) {
         let _p = crate::perf::Probe::new("draw");
-        let Ok(mut i) = self.inner.try_borrow_mut() else {
+        let Ok(i) = self.inner.try_borrow_mut() else {
             return;
         };
         let size = i.model.size();
@@ -788,18 +847,8 @@ impl App {
             path.setLineWidth(1.5);
             path.stroke();
         }
-        gc.saveGraphicsState();
-        path.addClip();
-        let Inner {
-            painter,
-            scene,
-            artwork,
-            ..
-        } = &mut *i;
-        let art = |id: u64| artwork.get(&id).cloned();
-        painter.paint(scene, &art);
-        gc.restoreGraphicsState();
         CGContext::restore_g_state(Some(&cg));
+        let scene = &i.scene;
         // Position the camera host layer if the page shows it.
         let host = scene.ops.iter().find_map(|o| match o {
             crate::scene::Op::CameraHost { rect, radius } => {
@@ -808,6 +857,62 @@ impl App {
             _ => None,
         });
         super::camera::place(host);
+    }
+
+    /// Draws one content layer at full alpha (its opacity is animated).
+    pub fn draw_content(&self, page: bool) {
+        let _p = crate::perf::Probe::new(if page { "draw page" } else { "draw closed" });
+        let Ok(mut i) = self.inner.try_borrow_mut() else {
+            return;
+        };
+        let offset = i.offset;
+        let Some(gc) = objc2_app_kit::NSGraphicsContext::currentContext() else {
+            return;
+        };
+        let cg = gc.CGContext();
+        CGContext::save_g_state(Some(&cg));
+        CGContext::translate_ctm(Some(&cg), offset, 0.0);
+        let Inner {
+            painter,
+            artwork,
+            content,
+            ..
+        } = &mut *i;
+        let art = |id: u64| artwork.get(&id).cloned();
+        let layer = &mut content[page as usize];
+        let mut scene = Scene {
+            ops: std::mem::take(&mut layer.ops),
+            ..Scene::default()
+        };
+        painter.paint(&scene, &art);
+        layer.ops = std::mem::take(&mut scene.ops);
+        CGContext::restore_g_state(Some(&cg));
+    }
+
+    /// Splits the scene into the two content layers. A layer whose ops change
+    /// is redrawn once; animation frames only change opacity and masks.
+    fn update_layers(&self) {
+        let changed = {
+            let mut i = self.inner.borrow_mut();
+            let open = i.model.motion.open.value.clamp(0.0, 1.0);
+            let split = split_layer_ops(&i.scene.ops, open);
+            let mut changed = [false; 2];
+            for (idx, ops) in split.into_iter().enumerate() {
+                let layer = &mut i.content[idx];
+                if layer.ops != ops {
+                    layer.ops = ops;
+                    layer.generation += 1;
+                    changed[idx] = true;
+                }
+            }
+            changed
+        };
+        if changed[0] {
+            self.closed_view.setNeedsDisplay(true);
+        }
+        if changed[1] {
+            self.page_view.setNeedsDisplay(true);
+        }
     }
 
     // ---------- pointer ----------
@@ -1289,6 +1394,29 @@ fn sharing_type(s: &Settings) -> NSWindowSharingType {
         NSWindowSharingType::None
     } else {
         NSWindowSharingType::ReadOnly
+    }
+}
+
+/// Splits the scene's ops into `[closed, page]`. `island.rs` separates the two
+/// blocks with `Op::Alpha` markers: `Alpha(1 - open)`, closed ops, `Alpha(open)`,
+/// page ops, `Alpha(1)`. The closed block exists while `open < 1`, the page block
+/// while `open > 0`. Provisional until the scene is built in layers.
+fn split_layer_ops(ops: &[Op], open: f64) -> [Vec<Op>; 2] {
+    let mut runs: Vec<Vec<Op>> = vec![vec![]];
+    for op in ops {
+        if let Op::Alpha(_) = op {
+            runs.push(vec![]);
+        } else {
+            runs.last_mut().expect("at least one run").push(op.clone());
+        }
+    }
+    let run = |k: usize| runs.get(k).cloned().unwrap_or_default();
+    if open >= 1.0 {
+        [vec![], run(1)]
+    } else if open > 0.0 {
+        [run(1), run(2)]
+    } else {
+        [run(1), vec![]]
     }
 }
 
