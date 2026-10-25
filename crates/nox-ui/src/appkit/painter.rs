@@ -829,6 +829,16 @@ mod bench {
             model
                 .motion
                 .snap(model.motion.w.target, model.motion.h.target, true);
+            {
+                let t = Instant::now();
+                for _ in 0..200 {
+                    model.layers(&state, &settings, now, None);
+                }
+                println!(
+                    "layers avg {:.0} µs",
+                    t.elapsed().as_secs_f64() * 1e6 / 200.0
+                );
+            }
             let t = Instant::now();
             painter.prepare(&model.scene(&state, &settings, now, None), &src);
             println!("prepare {:.0} µs", t.elapsed().as_secs_f64() * 1e6);

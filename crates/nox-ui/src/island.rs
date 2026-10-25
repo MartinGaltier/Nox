@@ -247,6 +247,7 @@ impl IslandModel {
         now: f64,
         hover: Option<Point>,
     ) -> LayeredScene {
+        let _p = crate::perf::Probe::new("layers");
         let g = &self.geometry;
         let silhouette = self.size();
         let open = self.motion.open.value.clamp(0.0, 1.0);
