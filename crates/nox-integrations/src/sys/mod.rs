@@ -10,6 +10,8 @@ pub mod eventkit;
 pub mod fsevents;
 pub mod http;
 pub mod keyboard;
+pub mod media;
+pub mod pasteboard;
 pub mod peripherals;
 pub mod prefs;
 pub mod progress;

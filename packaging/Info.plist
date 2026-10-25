@@ -48,6 +48,8 @@
 	<string>Nox affiche vos captures d’écran récentes dans l’îlot (module Captures, désactivé par défaut).</string>
 	<key>NSDocumentsFolderUsageDescription</key>
 	<string>Nox affiche vos captures d’écran récentes si vous les enregistrez dans Documents.</string>
+	<key>NSAudioCaptureUsageDescription</key>
+	<string>Nox lit le son d’une app seulement si vous activez les niveaux audio réels ou le mixeur. L’audio n’est ni enregistré ni envoyé.</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>© 2026 Martin Galtier — GPL-3.0-or-later. Inspiré de Vorssaint (GPL-3.0-or-later).</string>
 </dict>

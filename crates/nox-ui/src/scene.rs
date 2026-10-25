@@ -176,6 +176,8 @@ pub enum Action {
         w: f64,
         control: LevelControl,
     },
+    /// Follow this player (bundle id) when several publish a track.
+    PreferPlayer(String),
     /// Irreversible action: ask for confirmation first.
     Confirm {
         title: String,

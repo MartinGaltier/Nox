@@ -848,6 +848,11 @@ impl App {
                     self.hub.send(command);
                 }
             }
+            Action::PreferPlayer(bundle) => {
+                let mut s = (*self.settings()).clone();
+                s.music.preferred_player = Some(bundle);
+                self.save_settings(s);
+            }
             Action::Collapse => self.inner.borrow_mut().model.machine.close(mono()),
             Action::Open(sec) => {
                 let mut i = self.inner.borrow_mut();

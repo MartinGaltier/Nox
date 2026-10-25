@@ -31,10 +31,11 @@ pub enum Section {
     Captures,
     Scratchpad,
     Clipboard,
+    Mixer,
 }
 
 impl Section {
-    pub const DEFAULT_ORDER: [Section; 16] = [
+    pub const DEFAULT_ORDER: [Section; 17] = [
         Section::Music,
         Section::Calendar,
         Section::Agents,
@@ -51,6 +52,7 @@ impl Section {
         Section::Captures,
         Section::Scratchpad,
         Section::Clipboard,
+        Section::Mixer,
     ];
     pub fn label_fr(self) -> &'static str {
         match self {
@@ -67,6 +69,7 @@ impl Section {
             Section::Captures => "Captures",
             Section::Scratchpad => "Bloc-notes",
             Section::Clipboard => "Presse-papiers",
+            Section::Mixer => "Mixeur",
             Section::System => "Système",
             Section::KeepAwake => "Maintien éveillé",
             Section::Accessories => "Accessoires",
@@ -87,6 +90,7 @@ impl Section {
             Section::Captures => "photo.on.rectangle",
             Section::Scratchpad => "note.text",
             Section::Clipboard => "doc.on.clipboard",
+            Section::Mixer => "slider.horizontal.3",
             Section::System => "gauge.with.dots.needle.50percent",
             Section::KeepAwake => "cup.and.saucer",
             Section::Accessories => "headphones",
@@ -108,6 +112,7 @@ impl Section {
             Section::Captures => ModuleId::Captures,
             Section::Scratchpad => ModuleId::Scratchpad,
             Section::Clipboard => ModuleId::Clipboard,
+            Section::Mixer => ModuleId::Mixer,
             Section::System => ModuleId::Metrics,
             Section::KeepAwake => ModuleId::Power,
             Section::Accessories => ModuleId::Accessories,
@@ -235,6 +240,7 @@ pub struct Settings {
     pub shortcuts: ShortcutSettings,
     pub captures: crate::model::captures::CaptureSettings,
     pub clipboard: crate::model::clipboard::ClipboardSettings,
+    pub mixer: crate::model::mixer::MixerSettings,
     pub camera: CameraSettings,
     pub agents: AgentSettings,
     pub watch: WatchSettings,
@@ -259,6 +265,7 @@ impl Default for Settings {
             shortcuts: Default::default(),
             captures: Default::default(),
             clipboard: Default::default(),
+            mixer: Default::default(),
             camera: Default::default(),
             agents: Default::default(),
             watch: Default::default(),
@@ -281,6 +288,7 @@ impl Settings {
                 | ModuleId::Notifications
                 | ModuleId::Captures
                 | ModuleId::Clipboard
+                | ModuleId::Mixer
         )
     }
     pub fn module_enabled(&self, id: ModuleId) -> bool {

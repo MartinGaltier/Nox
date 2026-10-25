@@ -349,6 +349,7 @@ mod tests {
         let settings = Settings::default();
         let st = IslandState {
             clipboard: Some(ClipboardState {
+                access: Default::default(),
                 items: vec![ClipEntry {
                     id: 9,
                     kind: ClipKind::Url,

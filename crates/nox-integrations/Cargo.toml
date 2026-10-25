@@ -30,6 +30,7 @@ objc2-foundation = { workspace = true, features = [
     "NSDistributedNotificationCenter",
     "NSError",
     "NSFileManager",
+    "NSLocale",
     "NSNotification",
     "NSObject",
     "NSOperation",

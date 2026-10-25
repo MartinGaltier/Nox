@@ -39,8 +39,7 @@ impl Default for AccessoriesModule {
 }
 
 impl AccessoriesModule {
-    /// `AccessoryCommand` handling (routed once `Command::Accessories`
-    /// exists in nox-core). Never blocks: the prompt is asynchronous and
+    /// `AccessoryCommand` handling (`Command::Accessories`). Never blocks: the prompt is asynchronous and
     /// the polling loop picks the answer up on its next pass.
     pub fn handle(&mut self, c: AccessoryCommand) {
         match c {
@@ -82,6 +81,12 @@ impl Module for AccessoriesModule {
             w.stop();
         }
         self.bluetooth_request = None;
+    }
+
+    fn command(&mut self, cmd: nox_core::Command) {
+        if let nox_core::Command::Accessories(c) = cmd {
+            self.handle(c);
+        }
     }
 
     fn settings_changed(&mut self, settings: &Arc<Settings>) {

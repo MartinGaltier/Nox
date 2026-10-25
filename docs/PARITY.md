@@ -43,8 +43,8 @@ Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE
 | B5 | Paroles synchronisées | `NotchLyricsService` : LRCLIB en ligne (`notchLyricsOnline`), synchro ligne | LRCLIB | réseau | Client HTTP + cache disque | Ligne active suit la lecture | implémentée ; requête LRCLIB réelle testée |
 | B6 | File des prochains morceaux | `NowPlayingQueue` + AppleScript | Musique (et Spotify selon API) | AE / MediaRemote | idem | ≥ 3 prochains titres corrects | implémentée partielle (Musique estimé, Spotify non supporté) |
 | B7 | Visualisation audio | `notchLiveEqualizer` (niveaux réels via `NotchAudioLevelService`) sinon barres animées | — | Enregistrement audio système (process tap) ou animation | Process tap Core Audio si dispo, sinon animation marquée « non mesurée » | Barres réagissent au son | bloquée (vrais niveaux = capture audio système ; animation non mesurée) |
-| B8 | Pochettes navigateur | `notchBrowserCovers` (YouTube etc.) | Safari, Chrome | — | Artwork MediaRemote + fallback | — | partielle (pochette navigateur via MediaRemote ; recherche en ligne à faire) |
-| B9 | Lecteur préféré | `notchPreferredPlayer`, `notchIncludeOtherPlayers` | — | — | `MusicSettings.preferred_player` | — | partielle (`preferred_player` non honoré) |
+| B8 | Pochettes navigateur | `notchBrowserCovers` (YouTube etc.) | Safari, Chrome | — | Artwork MediaRemote + fallback | — | implémentée (opt-in) ; requêtes iTunes et miniature YouTube réelles testées ; session Firefox sur fixtures |
+| B9 | Lecteur préféré | `notchPreferredPlayer`, `notchIncludeOtherPlayers` | — | — | `MusicSettings.preferred_player` | — | implémentée ; sélection testée (2 lecteurs) ; commandes vers un lecteur non courant refusées par macOS (repli AppleScript Musique/Spotify) |
 | B10 | Activité changement de piste | `notchTrackChange`, `notchMusicActivity` : compact montre pochette + égaliseur | — | — | Alerte compacte | — | implémentée |
 
 ## C. Calendrier, notifications
@@ -77,7 +77,7 @@ Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE
 
 | ID | Fonction | Comportement Vorssaint | Apps/services | Permissions / dépendances | Implémentation Nox | Critères de validation | Statut |
 |---|---|---|---|---|---|---|---|
-| E1 | Accessoires connectés + batterie | `NotchAccessoryService` : AirPods (G/D/boîtier), claviers/souris, alerte connexion | Bluetooth, IOKit HID | BT (selon méthode) | IORegistry `BatteryPercent` + défauts Bluetooth | AirPods connectés → % affichés | implémentée — non testée (aucun accessoire) |
+| E1 | Accessoires connectés + batterie | `NotchAccessoryService` : AirPods (G/D/boîtier), claviers/souris, alerte connexion | Bluetooth, IOKit HID | BT (selon méthode) | IORegistry `BatteryPercent` + défauts Bluetooth | AirPods connectés → % affichés | implémentée ; IORegistry testé, gel Bluetooth corrigé et vérifié ; aucun accessoire connecté |
 | E2 | Alertes batterie interne | `notchLowBatteryThreshold`, `Early`, teinte, menu barre | — | — | Depuis `nox-metrics` | Seuil franchi → alerte | implémentée (tests unitaires) |
 | E3 | Suivi des téléchargements | Dossier Téléchargements (signet), `.crdownload/.download/.part`, progression | Safari, Chrome, Firefox, Arc… | accès dossier | FSEvents + taille fichiers | Téléchargement réel → progression puis fin | testée (téléchargement simulé) |
 | E4 | Outils de fichiers (étagère) | Déposer des fichiers sur l'îlot, AirDrop, partager, compresser, `notchDragReveal` | Finder | — | Drag & drop NSPanel | Glisser un fichier → apparaît, AirDrop ouvre | implémentée ; compression testée |
@@ -86,7 +86,7 @@ Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE
 | E7 | Contrôles volume / luminosité / clavier / micro / source | `notchVolume`, `Brightness`, `KeyboardLight`, `Microphone`, `InputSource`, ordre `notchControlOrder` | — | — | CoreAudio, DisplayServices (privé) | Curseurs agissent | implémentée ; volume/micro/luminosité testés, rétroéclairage clavier vérifié (sélecteurs macOS 27), sources d'entrée implémentées |
 | E8 | HUD volume/luminosité dans l'îlot | `NotchVolumeKeyGate` | — | AX (event tap) | À évaluer | — | implémentée (HUD dans l'îlot via écouteurs CoreAudio/DisplayServices, HUD système conservé ; notification luminosité testée) |
 | E9 | Mixeur par app | section `mixer` | — | process taps CoreAudio | hors priorité (utilitaire séparé) | — | à faire (évalué : capture audio) |
-| E10 | Presse-papiers dans l'îlot | section `clipboard` | — | — | Historique local | — | implémentée côté UI ; module en cours (Intégrations) |
+| E10 | Presse-papiers dans l'îlot | section `clipboard` | — | — | Historique local | — | implémentée (opt-in, mémoire seule) ; pasteboard privé testé ; alerte macOS sur le presse-papiers général = validation utilisateur |
 | E11 | Captures récentes | section `captures` | — | — | Dossier captures | — | implémentée (fixtures + rendu) ; vraie capture non testée, module désactivé par défaut |
 | E12 | Bloc-notes | section `scratchpad` | — | — | Fichier local | — | implémentée (fichier temporaire testé, éditeur natif) |
 
