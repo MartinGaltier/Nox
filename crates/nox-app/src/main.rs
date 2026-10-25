@@ -26,6 +26,7 @@ fn main() {
     modules.push(nox_power::module());
     modules.extend(nox_integrations::modules());
     modules.extend(nox_activities::modules());
+    modules.push(nox_audio::mixer_module());
 
     let (manager, _running) = ModuleManager::spawn(hub.clone(), modules, settings.clone());
     let manager = Arc::new(Mutex::new(Some(manager)));
