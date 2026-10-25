@@ -95,3 +95,38 @@ fn live_tap_on_playing_app() {
         "levels received (permission granted and player sounding?)"
     );
 }
+
+#[test]
+#[ignore = "runs the mixer module with every app at 100 % (no tap is created)"]
+fn mixer_lists_apps_without_tapping() {
+    use nox_core::{Hub, ModuleContext, Settings};
+    let hub = Hub::new();
+    let mut m = nox_audio::mixer_module();
+    m.start(ModuleContext {
+        hub: hub.clone(),
+        settings: std::sync::Arc::new(Settings::default()),
+    })
+    .unwrap();
+    let t = std::time::Instant::now();
+    let mut apps = vec![];
+    while t.elapsed() < Duration::from_secs(5) {
+        apps = hub.read(|s| s.mixer.as_ref().map(|m| m.apps.clone()).unwrap_or_default());
+        if !apps.is_empty() {
+            break;
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    for a in &apps {
+        println!(
+            "{} ({:?}) pid {} playing={} vol={} engaged={}",
+            a.name, a.bundle_id, a.pid, a.playing, a.volume, a.engaged
+        );
+    }
+    assert!(!apps.is_empty());
+    assert!(
+        apps.iter().all(|a| !a.engaged && a.volume == 1.0),
+        "no tap at 100 %"
+    );
+    m.stop();
+    assert!(hub.read(|s| s.mixer.is_none()));
+}

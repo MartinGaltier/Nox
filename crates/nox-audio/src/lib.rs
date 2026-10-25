@@ -3,7 +3,8 @@
 //! * [`meter::LevelMeter`] — live levels of the current player (B7), for the
 //!   music module: start it only while live levels are enabled, the player
 //!   plays and the music section is visible.
-//! * Per-app volume (E9) — see docs/AUDIO.md (in progress).
+//! * [`mixer_module`] — per-app volume (E9), `ModuleId::Mixer`; see
+//!   docs/AUDIO.md.
 //!
 //! Privacy: a tap needs the "System Audio Recording" permission
 //! (`NSAudioCaptureUsageDescription`), asked by macOS the first time a tap is
@@ -14,10 +15,13 @@
 
 pub mod analysis;
 pub mod meter;
+pub mod mixer;
+pub mod render;
 pub mod routing;
 mod sys;
 
 pub use meter::{LevelMeter, MeterConfig, MeterEvent};
+pub use mixer::module as mixer_module;
 
 /// Process taps exist from macOS 14.2; the process-object properties Nox
 /// relies on are stable from 14.4 (same floor as the reference app).
