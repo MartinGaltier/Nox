@@ -184,6 +184,37 @@ pub fn clipboard(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
     let Some(c) = cx.state.clipboard.as_ref() else {
         return module_missing(s, r, Section::Clipboard, enabled);
     };
+    // Nothing is read unless macOS lets Nox paste without asking each time.
+    match c.access {
+        PermissionState::Granted | PermissionState::NotRequired => {}
+        PermissionState::NotDetermined => {
+            empty(
+                s,
+                r.split_top(r.h - 34.0, 0.0).0,
+                "doc.on.clipboard",
+                "Autorisation de collage requise",
+                "macOS demandera une fois si Nox peut lire le presse-papiers ; choisissez « Toujours autoriser ».",
+            );
+            pill(
+                s,
+                cx,
+                Rect::new(r.mid_x() - 70.0, r.max_y() - 30.0, 140.0, 24.0),
+                "Autoriser…",
+                true,
+                Action::Send(Command::Clipboard(ClipboardCommand::RequestAccess)),
+            );
+            return;
+        }
+        _ => {
+            return empty(
+                s,
+                r,
+                "lock.slash",
+                "Collage non autorisé",
+                "Choisissez « Toujours autoriser » pour Nox dans Réglages Système › Confidentialité et sécurité › Coller depuis d’autres apps.",
+            );
+        }
+    }
     if c.items.is_empty() {
         return empty(
             s,

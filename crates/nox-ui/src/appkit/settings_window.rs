@@ -600,7 +600,19 @@ fn content(
         |s| s.music.lyrics_online,
         |s, v| s.music.lyrics_online = v,
     );
-    let purge = f.button("Purger le cache des paroles", || {
+    f.checkbox(
+        "Rechercher les pochettes manquantes en ligne",
+        |s| s.music.browser_artwork,
+        |s, v| s.music.browser_artwork = v,
+    );
+    f.note("Envoie titre et artiste à Apple (iTunes) ; lit la session Firefox locale pour retrouver la miniature YouTube.");
+    f.checkbox(
+        "Niveaux audio réels pour le visualiseur",
+        |s| s.music.live_levels,
+        |s, v| s.music.live_levels = v,
+    );
+    f.note("Demande l’autorisation d’enregistrement audio du système ; sinon l’égaliseur est animé et marqué « non mesuré ».");
+    let purge = f.button("Purger les caches (paroles et pochettes)", || {
         if let Some(a) = app::get() {
             a.hub.send(Command::Music(
                 nox_core::model::music::MusicCommand::ClearLyricsCache,
