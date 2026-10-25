@@ -2,18 +2,15 @@
 //! reset. Values are what the user asked for; nothing is measured here.
 
 use super::{
-    Ctx, ListLayout, bar, empty, icon_button, label, module_missing, pill, secondary, tertiary,
+    Ctx, ListLayout, bar, empty, icon_button, label, module_missing, permission_gate, pill,
+    secondary, tertiary,
 };
 use crate::format;
 use crate::geom::{Color, Rect};
 use crate::scene::{Action, Align, Scene, Weight};
-use nox_core::model::mixer::{MixerApp, MixerCommand, MixerState};
-use nox_core::permissions::PermissionState;
+use nox_core::model::mixer::{MixerApp, MixerCommand, MixerSettings, MixerState};
+use nox_core::permissions::{Permission, PermissionState};
 use nox_core::{Command, Section};
-
-/// Privacy pane for « Enregistrement audio du système ».
-const AUDIO_CAPTURE_URL: &str =
-    "x-apple.systempreferences:com.apple.preference.security?Privacy_AudioCapture";
 
 /// Not at 100 % or muted: the app has a setting Nox must keep applying.
 fn customized(a: &MixerApp) -> bool {
@@ -34,11 +31,22 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
             &format::unavailable_full(u),
         );
     }
+    // Only a refused permission gates the page: NotDetermined is answered by
+    // macOS at the first adjusted app, so sliders must stay usable until then.
     if matches!(
         m.permission,
         PermissionState::Denied | PermissionState::Restricted
     ) {
-        return permission_gate(s, cx, r);
+        permission_gate(
+            s,
+            cx,
+            r,
+            Permission::SystemAudio,
+            m.permission,
+            "Silence reçu : accès probablement refusé.",
+            None,
+        );
+        return;
     }
     if m.apps.is_empty() {
         return empty(
@@ -50,26 +58,6 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
         );
     }
     list(s, cx, r, m);
-}
-
-/// Nox only receives silence from a denied tap: explain it instead of
-/// showing sliders that would do nothing.
-fn permission_gate(s: &mut Scene, cx: &Ctx, r: Rect) {
-    empty(
-        s,
-        r.split_top(r.h - 34.0, 0.0).0,
-        "lock.slash",
-        "Autorisation requise : enregistrement audio",
-        "Silence reçu : accès probablement refusé. Autorisez Nox dans Réglages Système › Confidentialité.",
-    );
-    pill(
-        s,
-        cx,
-        Rect::new(r.mid_x() - 90.0, r.max_y() - 30.0, 180.0, 24.0),
-        "Ouvrir les Réglages Système",
-        false,
-        Action::OpenUrl(AUDIO_CAPTURE_URL.into()),
-    );
 }
 
 fn list(s: &mut Scene, cx: &Ctx, r: Rect, m: &MixerState) {
@@ -162,6 +150,49 @@ fn list(s: &mut Scene, cx: &Ctx, r: Rect, m: &MixerState) {
         slider(s, row, a);
     }
     list.end(s);
+}
+
+/// Keeps `settings.mixer` in step with a command from the page, so a volume
+/// survives a restart. Only apps with a bundle id are remembered, and only by
+/// bundle id. Returns true when the settings changed.
+pub fn remember(mixer: &mut MixerSettings, apps: &[MixerApp], cmd: &MixerCommand) -> bool {
+    let bundle = |id: &str| {
+        apps.iter()
+            .find(|a| a.id == id)
+            .and_then(|a| a.bundle_id.clone())
+    };
+    let before = mixer.clone();
+    match cmd {
+        MixerCommand::SetVolume { app, volume } => {
+            if let Some(b) = bundle(app) {
+                if (*volume - 1.0).abs() > f32::EPSILON {
+                    mixer.volumes.insert(b, *volume);
+                } else {
+                    mixer.volumes.remove(&b);
+                }
+            }
+        }
+        MixerCommand::SetMuted { app, muted } => {
+            if let Some(b) = bundle(app) {
+                mixer.muted.retain(|m| *m != b);
+                if *muted {
+                    mixer.muted.push(b);
+                }
+            }
+        }
+        MixerCommand::Reset { app } => {
+            if let Some(b) = bundle(app) {
+                mixer.volumes.remove(&b);
+                mixer.muted.retain(|m| *m != b);
+            }
+        }
+        MixerCommand::ResetAll => {
+            mixer.volumes.clear();
+            mixer.muted.clear();
+        }
+        MixerCommand::Visible(_) => {}
+    }
+    *mixer != before
 }
 
 /// 0–200 % slider on the second line of a row; 100 % is marked.
@@ -331,7 +362,69 @@ mod tests {
         assert!(s.has_text("Autorisation requise"));
         assert!(!s.has_text("Alpha"));
         let a = s.actions();
-        assert!(a.contains(&&Action::OpenUrl(AUDIO_CAPTURE_URL.into())));
+        assert!(a.contains(&&Action::OpenUrl(
+            Permission::SystemAudio.settings_url().into()
+        )));
         assert!(!a.iter().any(|x| matches!(x, Action::SetAppVolume { .. })));
+    }
+
+    #[test]
+    fn remember_keeps_only_bundle_ids_and_clears_on_reset() {
+        let apps = vec![
+            app("com.example.a", "Alpha", 1.0, false),
+            MixerApp {
+                bundle_id: None,
+                ..app("pid:42", "Helper", 1.0, false)
+            },
+        ];
+        let mut m = MixerSettings::default();
+        let set = |m: &mut MixerSettings, cmd: MixerCommand| remember(m, &apps, &cmd);
+        assert!(set(
+            &mut m,
+            MixerCommand::SetVolume {
+                app: "com.example.a".into(),
+                volume: 0.4,
+            }
+        ));
+        assert_eq!(m.volumes.get("com.example.a"), Some(&0.4));
+        assert!(set(
+            &mut m,
+            MixerCommand::SetMuted {
+                app: "com.example.a".into(),
+                muted: true,
+            }
+        ));
+        assert_eq!(m.muted, vec!["com.example.a".to_string()]);
+        // An app without a bundle id is never written to disk.
+        assert!(!set(
+            &mut m,
+            MixerCommand::SetVolume {
+                app: "pid:42".into(),
+                volume: 0.4,
+            }
+        ));
+        assert_eq!(m.volumes.len(), 1);
+        // Back to 100 % removes the entry instead of storing 1.0.
+        assert!(set(
+            &mut m,
+            MixerCommand::SetVolume {
+                app: "com.example.a".into(),
+                volume: 1.0,
+            }
+        ));
+        assert!(m.volumes.is_empty());
+        // Still muted, so resetting the app does change the settings.
+        assert!(set(
+            &mut m,
+            MixerCommand::Reset {
+                app: "com.example.a".into(),
+            }
+        ));
+        assert!(!set(&mut m, MixerCommand::ResetAll));
+        m.volumes.insert("com.example.a".into(), 0.4);
+        m.muted.push("com.example.a".into());
+        assert!(set(&mut m, MixerCommand::ResetAll));
+        assert_eq!(m, MixerSettings::default());
+        assert!(!set(&mut m, MixerCommand::Visible(true)));
     }
 }

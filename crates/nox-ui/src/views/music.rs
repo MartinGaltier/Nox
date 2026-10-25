@@ -6,7 +6,7 @@ use crate::format;
 use crate::geom::{Color, Rect};
 use crate::scene::{Action, Align, MusicPanel, Op, Scene, Weight};
 use nox_core::model::music::{LyricLine, MusicCommand, NowPlaying, RepeatMode};
-use nox_core::permissions::PermissionState;
+use nox_core::permissions::{Permission, PermissionState};
 use nox_core::{Command, Reading, Section, Unavailable};
 
 /// Index of the active synced lyric line at `t`.
@@ -161,7 +161,26 @@ pub fn page(s: &mut Scene, cx: &Ctx, r: Rect, enabled: bool) {
 
     // Timeline.
     let t = np.elapsed_now(cx.now);
-    let ty = art.max_y() + 12.0;
+    // Live levels refused: say so on one line, with the way to fix it.
+    let refused = ms.live_levels && m.levels_refused;
+    let ty = art.max_y() + 12.0 + if refused { 36.0 } else { 0.0 };
+    if refused {
+        let (text, btn) =
+            Rect::new(main.x, art.max_y() + 8.0, main.w, 30.0).split_right(124.0, 8.0);
+        s.text(
+            text,
+            "Niveaux réels indisponibles : autorisation Enregistrement audio du système probablement refusée.",
+            secondary(10.0).lines(2),
+        );
+        pill(
+            s,
+            cx,
+            btn,
+            "Ouvrir les Réglages",
+            false,
+            Action::OpenUrl(Permission::SystemAudio.settings_url().into()),
+        );
+    }
     let tl = Rect::new(main.x, ty, main.w, 14.0);
     let (lt, rest) = tl.split_left(40.0, 4.0);
     let (track, rt) = rest.split_right(44.0, 4.0);
@@ -553,5 +572,22 @@ mod tests {
                 .iter()
                 .all(|v| *v == 0.15)
         );
+    }
+
+    #[test]
+    fn refused_levels_are_explained_only_when_live_levels_is_on() {
+        let mut st = state(true);
+        st.music.as_mut().unwrap().levels_refused = true;
+        let mut settings = Settings::default();
+        let mut s = Scene::default();
+        page(&mut s, &ctx(&st, &settings), page_rect(), true);
+        assert!(!s.has_text("Niveaux réels indisponibles"));
+        settings.music.live_levels = true;
+        let mut s = Scene::default();
+        page(&mut s, &ctx(&st, &settings), page_rect(), true);
+        assert!(s.has_text("Niveaux réels indisponibles"));
+        assert!(s.actions().contains(&&Action::OpenUrl(
+            Permission::SystemAudio.settings_url().into()
+        )));
     }
 }

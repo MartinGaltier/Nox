@@ -825,6 +825,7 @@ impl App {
     pub fn perform(&self, a: Action, click: Option<Point>) {
         let haptic = self.settings().island.haptics;
         match a {
+            Action::Send(Command::Mixer(cmd)) => self.send_mixer(cmd),
             Action::Send(c) => self.hub.send(c),
             Action::SendAll(cs) => cs.into_iter().for_each(|c| self.hub.send(c)),
             Action::SelectSection(s) => {
@@ -865,8 +866,7 @@ impl App {
                     // 0–200 % in steps of 1 %.
                     let volume = (f * 200.0).round() as f32 / 100.0;
                     use nox_core::model::mixer::MixerCommand;
-                    self.hub
-                        .send(Command::Mixer(MixerCommand::SetVolume { app, volume }));
+                    self.send_mixer(MixerCommand::SetVolume { app, volume });
                 }
             }
             Action::SetLevel { x, w, control } => {
@@ -922,6 +922,24 @@ impl App {
     }
 
     // ---------- settings ----------
+
+    /// Sends a mixer command and keeps `settings.mixer` in step, so a volume
+    /// is applied again at the next start.
+    fn send_mixer(&self, cmd: nox_core::model::mixer::MixerCommand) {
+        let mut s = (*self.settings()).clone();
+        let apps = self
+            .inner
+            .borrow()
+            .state
+            .mixer
+            .as_ref()
+            .map(|m| m.apps.clone())
+            .unwrap_or_default();
+        if crate::views::mixer::remember(&mut s.mixer, &apps, &cmd) {
+            self.save_settings(s);
+        }
+        self.hub.send(Command::Mixer(cmd));
+    }
 
     pub fn save_settings(&self, s: Settings) {
         let s = Arc::new(s);
