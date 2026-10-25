@@ -25,6 +25,8 @@ use std::time::{Duration, Instant};
 const REFRESH_EVERY: Duration = Duration::from_secs(15 * 60);
 /// EventKit sends bursts of change notifications.
 const CHANGE_DEBOUNCE: Duration = Duration::from_millis(500);
+/// Longest sleep: a backstop for wall-clock jumps (alerts and refreshes wake on time).
+const MAX_WAIT: Duration = Duration::from_secs(60);
 
 enum Msg {
     Command(CalendarCommand),
@@ -150,6 +152,27 @@ pub fn due_alerts<'a>(
         .filter(|e| e.start - now <= window && e.start - now > -60.0)
         .filter(|e| !alerted.contains(&alert_key(e)))
         .collect()
+}
+
+/// Time until the next event enters its alert window (`None` if none will).
+fn alert_wait(
+    events: &[CalendarEvent],
+    minutes_before: u32,
+    now: f64,
+    alerted: &HashSet<String>,
+) -> Option<Duration> {
+    let window = f64::from(minutes_before) * 60.0;
+    if window <= 0.0 {
+        return None;
+    }
+    events
+        .iter()
+        .filter(|e| !e.all_day && !e.is_reminder)
+        .filter(|e| !alerted.contains(&alert_key(e)))
+        .map(|e| e.start - window)
+        .filter(|t| *t > now)
+        .min_by(f64::total_cmp)
+        .map(|t| Duration::from_secs_f64(t - now))
 }
 
 fn alert_key(e: &CalendarEvent) -> String {
@@ -285,6 +308,29 @@ impl Engine {
         self.publish();
     }
 
+    /// How long the loop may sleep: until the next alert window opens, the
+    /// periodic refresh, or the debounced change refresh is due.
+    fn wait(&self, now: f64) -> Duration {
+        let refresh = self
+            .last_refresh
+            .map(|t| REFRESH_EVERY.saturating_sub(t.elapsed()));
+        let change = self
+            .dirty_at
+            .map(|t| t.saturating_duration_since(Instant::now()));
+        let alert = alert_wait(
+            &self.events,
+            self.settings.alert_minutes_before,
+            now,
+            &self.alerted,
+        );
+        [alert, refresh, change]
+            .into_iter()
+            .flatten()
+            .min()
+            .unwrap_or(MAX_WAIT)
+            .min(MAX_WAIT)
+    }
+
     fn check_alerts(&mut self) {
         let now = nox_core::model::now();
         let due: Vec<CalendarEvent> = due_alerts(
@@ -342,6 +388,9 @@ fn run(hub: Hub, settings: CalendarSettings, rx: Receiver<Msg>, token: CancelTok
     let (access_tx, access_rx) = unbounded();
     let (reminders_tx, reminders_rx) = unbounded();
     let (change_tx, change_rx) = unbounded::<()>();
+    // Keeps `change_rx` connected if the observer is dropped, so the select
+    // below cannot spin on a disconnected channel.
+    let _change_keepalive = change_tx.clone();
     let _observer = eventkit::observe_changes(move || {
         let _ = change_tx.send(());
     });
@@ -362,6 +411,7 @@ fn run(hub: Hub, settings: CalendarSettings, rx: Receiver<Msg>, token: CancelTok
     e.request_access(false);
     e.refresh();
     while !token.is_cancelled() {
+        let wait = e.wait(nox_core::model::now());
         select! {
             recv(rx) -> m => match m {
                 Ok(Msg::Command(c)) => e.on_command(c),
@@ -392,7 +442,7 @@ fn run(hub: Hub, settings: CalendarSettings, rx: Receiver<Msg>, token: CancelTok
                     .collect();
                 e.publish();
             },
-            default(Duration::from_secs(1)) => {},
+            default(wait) => {},
         }
         if e.dirty_at.is_some_and(|t| Instant::now() >= t)
             || e.last_refresh.is_none_or(|t| t.elapsed() >= REFRESH_EVERY)
@@ -461,6 +511,24 @@ mod tests {
         assert!(due_alerts(&events, 5, now, &alerted).is_empty());
         assert!(
             due_alerts(&events, 0, now, &HashSet::new()).is_empty(),
+            "0 = off"
+        );
+    }
+
+    #[test]
+    fn alert_wait_sleeps_until_the_window_opens() {
+        let now = 10_000.0;
+        let events = vec![ev("a", now + 900.0), ev("b", now + 120.0)];
+        // "a" opens its 5-minute window in 600 s; "b" is already inside it.
+        assert_eq!(
+            alert_wait(&events, 5, now, &HashSet::new()),
+            Some(Duration::from_secs(600))
+        );
+        let alerted = HashSet::from([alert_key(&events[0])]);
+        assert_eq!(alert_wait(&events, 5, now, &alerted), None);
+        assert_eq!(
+            alert_wait(&events, 0, now, &HashSet::new()),
+            None,
             "0 = off"
         );
     }
