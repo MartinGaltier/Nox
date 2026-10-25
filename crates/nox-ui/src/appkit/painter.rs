@@ -303,6 +303,7 @@ impl Painter {
     /// Creates what `scene` will need (decoded covers and their thumbnails,
     /// symbols, file thumbnails, text attributes) without drawing, so the
     /// first draw of new content costs the same as the rest.
+    #[allow(dead_code)] // the island draws groups; kept for whole-scene callers
     pub fn prepare(&mut self, scene: &Scene, artwork: ArtworkSource) {
         self.prepare_ops(&scene.ops, artwork);
     }

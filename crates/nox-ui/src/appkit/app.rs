@@ -12,7 +12,7 @@ use crate::geometry::{NotchGeometry, ignores_clicks, island_contains};
 use crate::gesture::{GestureAction, ScrollInput, movement};
 use crate::island::{IslandModel, Surface, machine_config};
 use crate::machine::Mode;
-use crate::scene::{Action, Op, Scene};
+use crate::scene::{Action, Group, LayeredScene};
 use block2::RcBlock;
 use nox_core::model::files::FileCommand;
 use nox_core::model::music::MusicCommand;
@@ -58,17 +58,6 @@ fn hot_zone_frame(geometry: &NotchGeometry) -> Rect {
 fn window_size(geometry: &NotchGeometry, settings: &Settings) -> Size {
     let e = geometry.expanded_size(&settings.island);
     Size::new(e.w.ceil() + 2.0 * SHADOW_X, e.h.ceil() + SHADOW_BOTTOM)
-}
-
-fn union(a: Rect, b: Rect) -> Rect {
-    let x = a.x.min(b.x);
-    let y = a.y.min(b.y);
-    Rect::new(
-        x,
-        y,
-        a.max_x().max(b.max_x()) - x,
-        a.max_y().max(b.max_y()) - y,
-    )
 }
 
 /// Display-synchronised clock for the animation: a `CADisplayLink` from the
@@ -150,14 +139,11 @@ struct Inner {
     state: IslandState,
     model: IslandModel,
     painter: Painter,
-    scene: Scene,
     hover: Option<Point>,
     /// Left edge of the shape inside the view (the window is fixed, see `fit_window`).
     offset: f64,
     /// The fixed window frame, global AppKit coordinates.
     frame: Rect,
-    /// Shape rectangle last drawn, in view coordinates: the dirty region.
-    drawn: Option<Rect>,
     anim: Option<FrameClock>,
     last_tick: f64,
     deadline: Option<Timer>,
@@ -174,17 +160,39 @@ struct Inner {
     /// Region selection asked; the overlay opens once watch reports Selecting.
     pending_selection: Option<nox_core::model::watch::WatchTrigger>,
     /// Damage of the last relayout, consumed when invalidating the view.
-    damage: Option<crate::scene::Damage>,
     dragging_files: bool,
-    /// Content of the closed strip (0) and of the open page (1), drawn by their layers.
+    /// Layer content of the closed strip (0) and of the open page (1).
     content: [LayerContent; 2],
+    /// Scene layers of the current frame: content, hits and scroll extent.
+    layers: LayeredScene,
 }
 
-/// Ops of one content layer, and a counter that changes when they do.
+impl Inner {
+    /// The action under a view point: the open page's hits first, then the
+    /// closed strip's. Hits are in each group's own coordinates.
+    fn action_at(&self, p: Point) -> Option<Action> {
+        [&self.layers.page, &self.layers.closed]
+            .into_iter()
+            .find_map(|group| {
+                let local = Point::new(p.x - (group.origin.x - self.frame.x), p.y);
+                group
+                    .hits
+                    .iter()
+                    .rev()
+                    .find(|h| h.rect.contains(local))
+                    .map(|h| h.action.clone())
+            })
+    }
+}
+
+/// One content layer: the group it draws, and where its origin sits in the view.
 #[derive(Default)]
 struct LayerContent {
-    ops: Vec<Op>,
-    generation: u64,
+    group: Group,
+    /// Group origin in view coordinates (the window is fixed).
+    view_x: f64,
+    /// Generation of `group` as drawn, `None` before the first update.
+    generation: Option<u64>,
 }
 
 pub struct App {
@@ -282,11 +290,10 @@ impl App {
                 state: IslandState::default(),
                 model,
                 painter: Painter::default(),
-                scene: Scene::default(),
+                layers: LayeredScene::default(),
                 hover: None,
                 offset,
                 frame,
-                drawn: None,
                 anim: None,
                 last_tick: 0.0,
                 deadline: None,
@@ -301,7 +308,6 @@ impl App {
                 music_visible: false,
                 mixer_visible: false,
                 pending_selection: None,
-                damage: None,
                 dragging_files: false,
                 content: [LayerContent::default(), LayerContent::default()],
             }),
@@ -611,16 +617,15 @@ impl App {
         self.panel.setFrame_display(ns_rect(frame), false);
         self.view
             .setFrame(ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h)));
-        self.inner.borrow_mut().drawn = None;
     }
 
     fn relayout(&self) {
         let (shows_metrics, shows_camera, refresh, extent, section) = {
             let mut i = self.inner.borrow_mut();
             let hover = i.hover.map(|p| Point::new(p.x - i.offset, p.y));
-            let scene = i
+            let layers = i
                 .model
-                .scene(&i.state, &i.settings, nox_core::model::now(), hover);
+                .layers(&i.state, &i.settings, nox_core::model::now(), hover);
             {
                 // Covers, symbols and text attributes are made here, before a
                 // transition needs them, not in its first draw.
@@ -628,18 +633,17 @@ impl App {
                     painter, artwork, ..
                 } = &mut *i;
                 let art = |id: u64| artwork.get(&id).cloned();
-                painter.prepare(&scene, &art);
+                painter.prepare_group(&layers.closed, &art);
+                painter.prepare_group(&layers.page, &art);
             }
             let r = (
-                scene.shows_metrics,
-                scene.shows_camera,
-                scene.refresh,
-                scene.scroll_extent,
+                layers.shows_metrics,
+                layers.shows_camera,
+                layers.refresh,
+                layers.scroll_extent,
                 i.model.current_section(&i.settings),
             );
-            let dmg = crate::scene::damage(&i.scene, &scene);
-            i.scene = scene;
-            i.damage = Some(dmg);
+            i.layers = layers;
             r
         };
         if let Some(sec) = section {
@@ -704,8 +708,9 @@ impl App {
                 }
             })
         });
-        let editor_rect = i.scene.ops.iter().find_map(|o| match o {
-            crate::scene::Op::TextEditor { rect } => Some(rect.offset(i.offset, 0.0)),
+        let page_x = i.layers.page.origin.x - i.frame.x;
+        let editor_rect = i.layers.page.ops.iter().find_map(|o| match o {
+            crate::scene::Op::TextEditor { rect } => Some(rect.offset(page_x, 0.0)),
             _ => None,
         });
         let initial = i
@@ -714,32 +719,8 @@ impl App {
             .as_ref()
             .map(|p| p.text.clone())
             .unwrap_or_default();
-        let dmg = i.damage.take();
-        let (offset, animating) = (i.offset, i.anim.is_some());
-        // While animating, only the shape's old and new rectangles change.
-        let size = i.model.size();
-        let shape = Rect::new(offset, 0.0, size.w, size.h);
-        let dirty = match i.drawn.replace(shape) {
-            Some(prev) if animating => union(prev, shape),
-            _ => shape,
-        };
         drop(i);
         super::editor::sync(&self.view, editor_rect, || initial);
-        // Unchanged scene: nothing to draw; a small change (equalizer bars,
-        // countdown digits): only that rectangle.
-        match dmg {
-            _ if animating => self.view.setNeedsDisplayInRect(ns_rect(Rect::new(
-                dirty.x - 4.0,
-                dirty.y - 4.0,
-                dirty.w + 8.0,
-                dirty.h + 8.0,
-            ))),
-            Some(crate::scene::Damage::None) => {}
-            Some(crate::scene::Damage::Rect(r)) => self
-                .view
-                .setNeedsDisplayInRect(super::util::ns_rect(r.offset(offset, 0.0))),
-            _ => self.view.setNeedsDisplay(true),
-        }
     }
 
     fn content_tick(&self) {
@@ -848,11 +829,11 @@ impl App {
             path.stroke();
         }
         CGContext::restore_g_state(Some(&cg));
-        let scene = &i.scene;
         // Position the camera host layer if the page shows it.
-        let host = scene.ops.iter().find_map(|o| match o {
+        let page_x = i.layers.page.origin.x - i.frame.x;
+        let host = i.layers.page.ops.iter().find_map(|o| match o {
             crate::scene::Op::CameraHost { rect, radius } => {
-                Some((rect.offset(offset, 0.0), *radius))
+                Some((rect.offset(page_x, 0.0), *radius))
             }
             _ => None,
         });
@@ -865,43 +846,44 @@ impl App {
         let Ok(mut i) = self.inner.try_borrow_mut() else {
             return;
         };
-        let offset = i.offset;
         let Some(gc) = objc2_app_kit::NSGraphicsContext::currentContext() else {
             return;
         };
         let cg = gc.CGContext();
         CGContext::save_g_state(Some(&cg));
-        CGContext::translate_ctm(Some(&cg), offset, 0.0);
         let Inner {
             painter,
             artwork,
             content,
             ..
         } = &mut *i;
+        let layer = &content[page as usize];
+        CGContext::translate_ctm(Some(&cg), layer.view_x, 0.0);
         let art = |id: u64| artwork.get(&id).cloned();
-        let layer = &mut content[page as usize];
-        let mut scene = Scene {
-            ops: std::mem::take(&mut layer.ops),
-            ..Scene::default()
-        };
-        painter.paint(&scene, &art);
-        layer.ops = std::mem::take(&mut scene.ops);
+        painter.paint_group(&layer.group, &art);
         CGContext::restore_g_state(Some(&cg));
     }
 
-    /// Splits the scene into the two content layers. A layer whose ops change
-    /// is redrawn once; animation frames only change opacity and masks.
+    /// Hands the two layer groups to their content layers. A group is copied
+    /// and its layer redrawn only when its generation changes; animation frames
+    /// only change opacity and masks.
     fn update_layers(&self) {
         let changed = {
             let mut i = self.inner.borrow_mut();
-            let open = i.model.motion.open.value.clamp(0.0, 1.0);
-            let split = split_layer_ops(&i.scene.ops, open);
+            let Inner {
+                layers,
+                content,
+                frame,
+                ..
+            } = &mut *i;
+            let groups = [&layers.closed, &layers.page];
             let mut changed = [false; 2];
-            for (idx, ops) in split.into_iter().enumerate() {
-                let layer = &mut i.content[idx];
-                if layer.ops != ops {
-                    layer.ops = ops;
-                    layer.generation += 1;
+            for (idx, group) in groups.into_iter().enumerate() {
+                let layer = &mut content[idx];
+                if layer.generation != Some(group.generation) {
+                    layer.group = group.clone();
+                    layer.view_x = group.origin.x - frame.x;
+                    layer.generation = Some(group.generation);
                     changed[idx] = true;
                 }
             }
@@ -1017,11 +999,7 @@ impl App {
     pub fn mouse_down(&self, p: Point) {
         let (hit, mode) = {
             let i = self.inner.borrow();
-            let local = Point::new(p.x - i.offset, p.y);
-            (
-                i.scene.hit_at(local).map(|h| h.action.clone()),
-                i.model.machine.mode,
-            )
+            (i.action_at(p), i.model.machine.mode)
         };
         match hit {
             Some(Action::Seek { x, w, duration }) => {
@@ -1061,7 +1039,7 @@ impl App {
         let action = {
             let mut i = self.inner.borrow_mut();
             let in_header = p.y < i.model.geometry.camera_height + 4.0;
-            let extent = i.scene.scroll_extent;
+            let extent = i.layers.scroll_extent;
             let settings = i.settings.clone();
             i.model.scroll(input, &settings, in_header, extent)
         };
@@ -1394,29 +1372,6 @@ fn sharing_type(s: &Settings) -> NSWindowSharingType {
         NSWindowSharingType::None
     } else {
         NSWindowSharingType::ReadOnly
-    }
-}
-
-/// Splits the scene's ops into `[closed, page]`. `island.rs` separates the two
-/// blocks with `Op::Alpha` markers: `Alpha(1 - open)`, closed ops, `Alpha(open)`,
-/// page ops, `Alpha(1)`. The closed block exists while `open < 1`, the page block
-/// while `open > 0`. Provisional until the scene is built in layers.
-fn split_layer_ops(ops: &[Op], open: f64) -> [Vec<Op>; 2] {
-    let mut runs: Vec<Vec<Op>> = vec![vec![]];
-    for op in ops {
-        if let Op::Alpha(_) = op {
-            runs.push(vec![]);
-        } else {
-            runs.last_mut().expect("at least one run").push(op.clone());
-        }
-    }
-    let run = |k: usize| runs.get(k).cloned().unwrap_or_default();
-    if open >= 1.0 {
-        [vec![], run(1)]
-    } else if open > 0.0 {
-        [run(1), run(2)]
-    } else {
-        [run(1), vec![]]
     }
 }
 
