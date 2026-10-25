@@ -444,13 +444,18 @@ impl Collector {
                     what: registry::waiting_label(e.waiting_for.as_deref()),
                 }));
             }
-            // A live process keeps its session visible even when quiet.
+            // A live process keeps its session visible even when quiet. Moved in
+            // minute steps: a move on every tick would change the published state
+            // every tick, and the UI would be woken for nothing.
             if let Some(l) = self
                 .live
                 .sessions
                 .get_mut(&(AgentProvider::Claude, sid.clone()))
             {
-                l.last_event = l.last_event.max(now - live::VISIBLE_FOR + 60.0);
+                let keep = now - live::VISIBLE_FOR + 60.0;
+                if keep >= l.last_event + 60.0 {
+                    l.last_event = keep;
+                }
             }
         }
         self.prev_status = reg.iter().map(|(k, e)| (k.clone(), e.status)).collect();
