@@ -120,21 +120,22 @@ pub mod diag {
             ring: ring.clone(),
             tap_channels: 2,
         });
-        let cpu0 = cpu_time();
         let ptr = (&*client as *const crate::meter::IoClient)
             .cast_mut()
             .cast::<std::ffi::c_void>();
         // SAFETY: `client` outlives `io` (dropped after it below).
         let io = unsafe { hal::IoProc::start(agg.id, crate::meter::spike_io, ptr) }
             .map_err(|s| s.to_string())?;
-        let t = Instant::now();
+        // Steady state only: aggregate creation and IOProc start excluded.
+        std::thread::sleep(Duration::from_millis(500));
+        crate::meter::SPIKE_CYCLES.store(0, std::sync::atomic::Ordering::Relaxed);
+        let cpu0 = cpu_time();
         std::thread::sleep(dur);
-        drop(io);
         let used = cpu_time().saturating_sub(cpu0);
         let cycles = crate::meter::SPIKE_CYCLES.swap(0, std::sync::atomic::Ordering::Relaxed);
+        drop(io);
         drop(client);
         drop(agg);
-        let _ = t;
         Ok((cycles, used))
     }
 
