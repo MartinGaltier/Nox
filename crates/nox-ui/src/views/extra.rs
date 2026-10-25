@@ -380,7 +380,7 @@ mod tests {
         let settings = Settings::default();
         let st = IslandState {
             clipboard: Some(ClipboardState {
-                access: Default::default(),
+                access: PermissionState::Granted,
                 items: vec![ClipEntry {
                     id: 9,
                     kind: ClipKind::Url,
@@ -402,6 +402,17 @@ mod tests {
         ))));
         assert!(a.contains(&&Action::Send(Command::Clipboard(
             ClipboardCommand::Remove(9)
+        ))));
+        let mut nd = st.clone();
+        nd.clipboard.as_mut().unwrap().access = PermissionState::NotDetermined;
+        let mut s = Scene::default();
+        clipboard(&mut s, &ctx(&nd, &settings), page_rect(), true);
+        assert!(
+            !s.has_text("https://example.org"),
+            "nothing shown before access"
+        );
+        assert!(s.actions().contains(&&Action::Send(Command::Clipboard(
+            ClipboardCommand::RequestAccess
         ))));
     }
 }
