@@ -2,7 +2,7 @@
 //! auxiliary windows. Woken by the hub (coalesced); timers run only while
 //! something on screen changes (animation, countdown, hover delay, alert TTL).
 
-use super::island_window::{IslandPanel, IslandView};
+use super::island_window::{HotZoneView, IslandPanel, IslandView};
 use super::painter::Painter;
 use super::util::{ActionTarget, Observer, Timer, mono, ns_rect};
 use super::{files, haptics, screens};
@@ -40,6 +40,19 @@ use std::sync::Arc;
 /// and below the island.
 const SHADOW_X: f64 = 24.0;
 const SHADOW_BOTTOM: f64 = 32.0;
+
+/// Widest compact activity wing (the strip's wings), and the margin added
+/// around the compact shape for the hot zone.
+const HOT_WING: f64 = 64.0;
+const HOT_MARGIN: f64 = 6.0;
+
+/// Hot zone: a small window under the compact island, above the menu bar,
+/// that always takes the pointer. The island window itself ignores clicks
+/// outside its shape, so this is what the pointer meets to re-enter it.
+fn hot_zone_frame(geometry: &NotchGeometry) -> Rect {
+    let c = geometry.compact_size(HOT_WING);
+    geometry.window_frame(Size::new(c.w + 2.0 * HOT_MARGIN, c.h + HOT_MARGIN))
+}
 
 /// Size of the fixed panel: the largest island the settings allow, plus room
 /// for its shadow. Recomputed only when the screen or the settings change.
@@ -176,6 +189,8 @@ pub struct App {
     inner: RefCell<Inner>,
     panel: Retained<IslandPanel>,
     view: Retained<IslandView>,
+    hot_panel: Retained<IslandPanel>,
+    hot_view: Retained<HotZoneView>,
     observers: RefCell<Vec<Observer>>,
     pub status: RefCell<Option<super::status::StatusBar>>,
     pub settings_window: RefCell<Option<super::settings_window::SettingsWindow>>,
@@ -217,12 +232,16 @@ impl App {
         let model = IslandModel::new(geometry, &settings);
         let size = model.size();
         let frame = geometry.window_frame(window_size(&geometry, &settings));
+        let hot = hot_zone_frame(&geometry);
         let offset = geometry.shape_x(size.w) - frame.x;
         let panel = IslandPanel::new(mtm, ns_rect(frame));
         let view = IslandView::new(mtm, ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h)));
         configure_panel(&panel, &view, &settings);
         // Clicks pass through until the pointer is over the shape.
         panel.setIgnoresMouseEvents(true);
+        let hot_panel = IslandPanel::new(mtm, ns_rect(hot));
+        let hot_view = HotZoneView::new(mtm, ns_rect(Rect::new(0.0, 0.0, hot.w, hot.h)));
+        configure_hot_panel(&hot_panel, &hot_view, &settings);
 
         let debug = DebugOptions::from_env();
         let app = Rc::new(App {
@@ -261,6 +280,8 @@ impl App {
             }),
             panel,
             view,
+            hot_panel,
+            hot_view,
             observers: RefCell::new(vec![]),
             status: RefCell::new(None),
             settings_window: RefCell::new(None),
@@ -323,22 +344,13 @@ impl App {
                 i.model.machine.hold(true, mono());
             }
         }
-        // Global mouse movement re-enters the island while its window ignores
-        // clicks (mouse moves need no Accessibility permission).
-        let block = RcBlock::new(|_e: NonNull<NSEvent>| {
-            if let Some(a) = get() {
-                a.recheck_pointer();
-            }
-        });
-        let mask = NSEventMask::MouseMoved | NSEventMask::LeftMouseDragged;
-        *self.pointer_monitor.borrow_mut() =
-            NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block);
+        self.hot_panel.orderFrontRegardless();
         self.panel.orderFrontRegardless();
         self.on_wake();
         self.update_fullscreen();
         #[cfg(debug_assertions)]
         super::snapshot::schedule(self);
-        #[cfg(debug_assertions)]
+        #[cfg(any(debug_assertions, feature = "hover-probe"))]
         super::hover_probe::schedule(self);
     }
 
@@ -452,6 +464,8 @@ impl App {
             model.alerts.tick(now_m);
             model.retarget(state, settings, nox_core::model::now())
         };
+        let open = self.inner.borrow().model.machine.mode == Mode::Expanded;
+        self.set_pointer_monitor(open);
         if animating {
             self.start_animation();
         } else {
@@ -509,6 +523,10 @@ impl App {
     /// Sizes the fixed window for the current screen and settings. Called only
     /// when either changes, never per frame.
     fn fit_window(&self) {
+        let hot = hot_zone_frame(&self.inner.borrow().model.geometry);
+        self.hot_panel.setFrame_display(ns_rect(hot), false);
+        self.hot_view
+            .setFrame(ns_rect(Rect::new(0.0, 0.0, hot.w, hot.h)));
         let frame = {
             let i = self.inner.borrow();
             i.model
@@ -784,8 +802,8 @@ impl App {
         )
     }
 
-    /// Debug probe: the pointer enters the middle of the island or leaves it.
-    #[cfg(debug_assertions)]
+    /// Probe: the pointer enters the middle of the island or leaves it.
+    #[cfg(any(debug_assertions, feature = "hover-probe"))]
     pub fn debug_hover(&self, inside: bool) {
         let p = inside.then(|| {
             let f = super::util::rect(self.panel.frame());
@@ -819,12 +837,53 @@ impl App {
         }
     }
 
-    fn recheck_pointer(&self) {
+    /// Pointer in the island's view coordinates, if it is inside the window.
+    fn pointer_in_panel(&self) -> Option<Point> {
         let m = NSEvent::mouseLocation();
         let f = super::util::rect(self.panel.frame());
         let p = Point::new(m.x - f.x, f.max_y() - m.y);
         let inside_window = p.x >= 0.0 && p.y >= 0.0 && p.x <= f.w && p.y <= f.h;
-        self.pointer_moved(inside_window.then_some(p));
+        inside_window.then_some(p)
+    }
+
+    fn recheck_pointer(&self) {
+        self.pointer_moved(self.pointer_in_panel());
+    }
+
+    /// The hot zone was entered, left or moved over.
+    pub fn hot_zone_event(&self) {
+        self.recheck_pointer();
+    }
+
+    /// A click on the hot zone (the island ignores clicks there): the island
+    /// takes the pointer and handles the click as if it had received it.
+    pub fn hot_zone_click(&self) {
+        let Some(p) = self.pointer_in_panel() else {
+            return;
+        };
+        self.pointer_moved(Some(p));
+        if self.shape_contains(p) {
+            self.mouse_down(p);
+        }
+    }
+
+    /// Global mouse movement is watched only while the island is open: it lets
+    /// the pointer come back into an open shape the window ignores (mouse moves
+    /// need no Accessibility permission). Nothing is watched at rest.
+    fn set_pointer_monitor(&self, on: bool) {
+        let mut monitor = self.pointer_monitor.borrow_mut();
+        if on && monitor.is_none() {
+            let block = RcBlock::new(|_e: NonNull<NSEvent>| {
+                if let Some(a) = get() {
+                    a.recheck_pointer();
+                }
+            });
+            let mask = NSEventMask::MouseMoved | NSEventMask::LeftMouseDragged;
+            *monitor = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block);
+        } else if !on && let Some(old) = monitor.take() {
+            // SAFETY: the token was returned by addGlobalMonitorForEvents and is removed once.
+            unsafe { NSEvent::removeMonitor(&old) };
+        }
     }
 
     pub fn mouse_down(&self, p: Point) {
@@ -1136,7 +1195,9 @@ impl App {
         if changed {
             if covered {
                 self.panel.orderOut(None);
+                self.hot_panel.orderOut(None);
             } else {
+                self.hot_panel.orderFrontRegardless();
                 self.panel.orderFrontRegardless();
             }
             self.update();
@@ -1197,6 +1258,30 @@ impl App {
     pub fn state(&self) -> IslandState {
         self.inner.borrow().state.clone()
     }
+}
+
+/// The hot zone window: same level and spaces as the island, never shadowed.
+fn configure_hot_panel(panel: &IslandPanel, view: &HotZoneView, s: &Settings) {
+    panel.setOpaque(false);
+    panel.setBackgroundColor(Some(&NSColor::clearColor()));
+    panel.setHasShadow(false);
+    panel.setLevel(objc2_app_kit::NSStatusWindowLevel + 1);
+    panel.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    panel.setHidesOnDeactivate(false);
+    // SAFETY: the panel is owned by the controller; it must not free itself.
+    unsafe { panel.setReleasedWhenClosed(false) };
+    panel.setMovable(false);
+    panel.setSharingType(if s.island.hide_in_captures {
+        NSWindowSharingType::None
+    } else {
+        NSWindowSharingType::ReadOnly
+    });
+    panel.setContentView(Some(view));
 }
 
 fn configure_panel(panel: &IslandPanel, view: &IslandView, s: &Settings) {

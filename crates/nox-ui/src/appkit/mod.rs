@@ -11,7 +11,7 @@ pub mod files;
 pub mod fixture;
 pub mod haptics;
 pub mod hotkey;
-#[cfg(debug_assertions)]
+#[cfg(any(debug_assertions, feature = "hover-probe"))]
 pub mod hover_probe;
 pub mod island_window;
 pub mod login;

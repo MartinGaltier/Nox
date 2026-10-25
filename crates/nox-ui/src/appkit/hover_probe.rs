@@ -4,7 +4,7 @@
 //! and drawing paths all run as usual. (Synthetic mouse events need the
 //! Accessibility permission, which the measuring terminal may not have.)
 
-#![cfg(debug_assertions)]
+#![cfg(any(debug_assertions, feature = "hover-probe"))]
 
 use super::app::{self, App};
 use super::util::{Timer, mono};
