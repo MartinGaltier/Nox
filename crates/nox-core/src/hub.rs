@@ -39,6 +39,7 @@ pub struct IslandState {
 
 type Waker = Box<dyn Fn() + Send + Sync>;
 type CommandSink = Box<dyn Fn(Command) + Send + Sync>;
+type Observer = Arc<dyn Fn() + Send + Sync>;
 
 struct Inner {
     state: RwLock<IslandState>,
@@ -48,11 +49,31 @@ struct Inner {
     waker: RwLock<Option<Waker>>,
     wake_pending: AtomicBool,
     commands: RwLock<Option<CommandSink>>,
+    observers: Mutex<Vec<(u64, Observer)>>,
+    next_observer: AtomicU64,
 }
 
 #[derive(Clone)]
 pub struct Hub {
     inner: Arc<Inner>,
+}
+
+/// Keeps a [`Hub::subscribe`] observer registered; dropping it unsubscribes.
+pub struct Subscription {
+    hub: Hub,
+    id: u64,
+}
+
+impl Drop for Subscription {
+    fn drop(&mut self) {
+        let mut obs = self
+            .hub
+            .inner
+            .observers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+        obs.retain(|(id, _)| *id != self.id);
+    }
 }
 
 impl Default for Hub {
@@ -74,6 +95,8 @@ impl Hub {
                 waker: RwLock::new(None),
                 wake_pending: AtomicBool::new(false),
                 commands: RwLock::new(None),
+                observers: Mutex::new(Vec::new()),
+                next_observer: AtomicU64::new(1),
             }),
         }
     }
@@ -86,7 +109,38 @@ impl Hub {
         }
         perf_count(std::thread::current().name().unwrap_or("unnamed"));
         self.inner.generation.fetch_add(1, Ordering::SeqCst);
+        self.notify();
         self.wake();
+    }
+
+    /// Calls `f` after every change (publication or alert), on the publishing
+    /// thread: it must be cheap, typically a wake-up of the subscriber.
+    pub fn subscribe(&self, f: impl Fn() + Send + Sync + 'static) -> Subscription {
+        let id = self.inner.next_observer.fetch_add(1, Ordering::SeqCst);
+        self.inner
+            .observers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .push((id, Arc::new(f)));
+        Subscription {
+            hub: self.clone(),
+            id,
+        }
+    }
+
+    fn notify(&self) {
+        // Clone the observers out so a callback may subscribe or publish.
+        let obs: Vec<Observer> = self
+            .inner
+            .observers
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .iter()
+            .map(|(_, f)| f.clone())
+            .collect();
+        for f in obs {
+            f();
+        }
     }
 
     pub fn read<R>(&self, f: impl FnOnce(&IslandState) -> R) -> R {
@@ -113,6 +167,7 @@ impl Hub {
             }
         }
         self.inner.generation.fetch_add(1, Ordering::SeqCst);
+        self.notify();
         self.wake();
         id
     }
@@ -208,6 +263,22 @@ mod tests {
     use super::*;
     use crate::alert::AlertKind;
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn subscribers_hear_each_change_until_dropped() {
+        let hub = Hub::new();
+        let n = Arc::new(AtomicUsize::new(0));
+        let n2 = n.clone();
+        let sub = hub.subscribe(move || {
+            n2.fetch_add(1, Ordering::SeqCst);
+        });
+        hub.update(|s| s.music = None);
+        hub.push_alert(Alert::new(AlertKind::Info, "x", "bell"));
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+        drop(sub);
+        hub.update(|s| s.music = None);
+        assert_eq!(n.load(Ordering::SeqCst), 2);
+    }
 
     #[test]
     fn wake_is_coalesced_until_acknowledged() {
