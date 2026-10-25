@@ -3,7 +3,7 @@
 use super::util::{ns_color, ns_rect};
 use crate::geom::{Point, Rect};
 use crate::geometry::Seg;
-use crate::scene::{Align, Op, Scene, TextStyle, Weight};
+use crate::scene::{Align, Group, Op, Scene, TextStyle, Weight};
 use objc2::AnyThread;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
@@ -34,8 +34,11 @@ type SymbolKey = (String, u32, [u8; 4], u8);
 #[derive(Default)]
 pub struct Painter {
     symbols: HashMap<SymbolKey, Option<Retained<NSImage>>>,
-    /// Album covers, by (id, pixel width, pixel height) of their rect.
-    artwork: HashMap<(u64, u32, u32), Option<Retained<NSImage>>>,
+    /// Album covers decoded once per id.
+    decoded: HashMap<u64, Option<Retained<NSImage>>>,
+    /// Album covers downscaled to a square of `side` pixels (see
+    /// [`artwork_side`]), by (id, side).
+    artwork: HashMap<(u64, u32), Retained<NSImage>>,
     /// Downscaled thumbnails of image files, by path (full-size screenshots
     /// are never kept decoded).
     thumbs: HashMap<String, Option<Retained<NSImage>>>,
@@ -70,6 +73,30 @@ fn rounded(r: Rect, radius: f64) -> Retained<NSBezierPath> {
     NSBezierPath::bezierPathWithRoundedRect_xRadius_yRadius(ns_rect(r), rad, rad)
 }
 
+/// `img` drawn once into a bitmap of its own size.
+fn rasterized(img: &NSImage) -> Retained<NSImage> {
+    let size = img.size();
+    let out = NSImage::initWithSize(NSImage::alloc(), size);
+    #[allow(deprecated)]
+    out.lockFocus();
+    img.drawInRect_fromRect_operation_fraction(
+        NSRect::new(NSPoint::new(0.0, 0.0), size),
+        NSRect::ZERO,
+        NSCompositingOperation::SourceOver,
+        1.0,
+    );
+    #[allow(deprecated)]
+    out.unlockFocus();
+    out
+}
+
+/// Pixel side of the cover bucket for `rect`: twice its larger side (Retina),
+/// rounded up to 128 px.
+fn artwork_side(rect: Rect) -> u32 {
+    const STEP: f64 = 128.0;
+    ((rect.w.max(rect.h) * 2.0 / STEP).ceil().max(1.0) * STEP) as u32
+}
+
 /// `src` downscaled to twice the size of `rect` (Retina), aspect kept, so
 /// each draw scales a small bitmap instead of the full-resolution image.
 fn cover_thumbnail(src: &NSImage, rect: Rect) -> Retained<NSImage> {
@@ -93,6 +120,25 @@ fn cover_thumbnail(src: &NSImage, rect: Rect) -> Retained<NSImage> {
     thumb
 }
 
+/// Probe name of an operation kind (`NOX_PERF=1`).
+fn op_stage(op: &Op) -> &'static str {
+    match op {
+        Op::Fill { .. } => "op.fill",
+        Op::Stroke { .. } => "op.stroke",
+        Op::Ellipse { .. } => "op.ellipse",
+        Op::Text { .. } => "op.text",
+        Op::Symbol { .. } => "op.symbol",
+        Op::Artwork { .. } => "op.artwork",
+        Op::Line { .. } => "op.line",
+        Op::Area { .. } => "op.area",
+        Op::Ring { .. } => "op.ring",
+        Op::PushClip { .. } | Op::PopClip => "op.clip",
+        Op::Alpha(_) => "op.alpha",
+        Op::FileImage { .. } => "op.fileimage",
+        Op::CameraHost { .. } | Op::TextEditor { .. } => "op.host",
+    }
+}
+
 fn cg() -> Option<Retained<CGContext>> {
     NSGraphicsContext::currentContext().map(|c| c.CGContext())
 }
@@ -100,6 +146,7 @@ fn cg() -> Option<Retained<CGContext>> {
 impl Painter {
     /// Drops cached artwork no longer referenced.
     pub fn retain_artwork(&mut self, keep: &[u64]) {
+        self.decoded.retain(|k, _| keep.contains(k));
         self.artwork.retain(|k, _| keep.contains(&k.0));
         if self.symbols.len() > 400 {
             self.symbols.clear();
@@ -140,6 +187,7 @@ impl Painter {
                     &NSImageSymbolConfiguration::configurationWithPaletteColors(&colors),
                 );
                 img.imageWithSymbolConfiguration(&cfg)
+                    .map(|configured| rasterized(&configured))
             })
             .clone()
     }
@@ -160,22 +208,32 @@ impl Painter {
             .clone()
     }
 
+    /// The cover for `rect`. A rect that is animating changes size every
+    /// frame, so covers are kept per [`artwork_side`] bucket, not per size:
+    /// decoding and downscaling then happen once per bucket, not per frame.
     fn artwork_image(
         &mut self,
         id: u64,
         rect: Rect,
         src: ArtworkSource,
     ) -> Option<Retained<NSImage>> {
-        let key = (id, (rect.w * 2.0) as u32, (rect.h * 2.0) as u32);
-        self.artwork
-            .entry(key)
+        let side = artwork_side(rect);
+        if let Some(img) = self.artwork.get(&(id, side)) {
+            return Some(img.clone());
+        }
+        let full = self
+            .decoded
+            .entry(id)
             .or_insert_with(|| {
                 let bytes = src(id)?;
                 let data = NSData::with_bytes(&bytes);
-                let full = NSImage::initWithData(NSImage::alloc(), &data)?;
-                Some(cover_thumbnail(&full, rect))
+                NSImage::initWithData(NSImage::alloc(), &data)
             })
-            .clone()
+            .clone()?;
+        let half = f64::from(side) / 2.0;
+        let img = cover_thumbnail(&full, Rect::new(0.0, 0.0, half, half));
+        self.artwork.insert((id, side), img.clone());
+        Some(img)
     }
 
     fn text_attributes(&mut self, st: &TextStyle) -> Retained<NSDictionary<NSString, AnyObject>> {
@@ -242,14 +300,68 @@ impl Painter {
         unsafe { s.drawWithRect_options_attributes_context(rr, opts, Some(&attrs), None) };
     }
 
+    /// Creates what `scene` will need (decoded covers and their thumbnails,
+    /// symbols, file thumbnails, text attributes) without drawing, so the
+    /// first draw of new content costs the same as the rest.
+    #[allow(dead_code)] // the island draws groups; kept for whole-scene callers
+    pub fn prepare(&mut self, scene: &Scene, artwork: ArtworkSource) {
+        self.prepare_ops(&scene.ops, artwork);
+    }
+
+    // Wired into the layered island draw next; see island::layers.
+    #[allow(dead_code)]
+    /// [`Painter::prepare`] for one layer of a [`LayeredScene`].
+    pub fn prepare_group(&mut self, group: &Group, artwork: ArtworkSource) {
+        self.prepare_ops(&group.ops, artwork);
+    }
+
+    fn prepare_ops(&mut self, ops: &[Op], artwork: ArtworkSource) {
+        for op in ops {
+            match op {
+                Op::Symbol {
+                    name,
+                    size,
+                    color,
+                    weight,
+                    ..
+                } => {
+                    self.symbol(name, *size, *color, *weight);
+                }
+                Op::Text { style, .. } => {
+                    self.text_attributes(style);
+                }
+                Op::Artwork { rect, id, .. } => {
+                    self.artwork_image(*id, *rect, artwork);
+                }
+                Op::FileImage { rect, path, .. } => {
+                    self.thumbnail(path, *rect);
+                }
+                _ => {}
+            }
+        }
+    }
+
     pub fn paint(&mut self, scene: &Scene, artwork: ArtworkSource) {
+        self.paint_ops(&scene.ops, artwork);
+    }
+
+    // Wired into the layered island draw next; see island::layers.
+    #[allow(dead_code)]
+    /// [`Painter::paint`] for one layer of a [`LayeredScene`]: drawn at full
+    /// alpha, the layer's opacity is applied by its caller.
+    pub fn paint_group(&mut self, group: &Group, artwork: ArtworkSource) {
+        self.paint_ops(&group.ops, artwork);
+    }
+
+    fn paint_ops(&mut self, ops: &[Op], artwork: ArtworkSource) {
         let _p = crate::perf::Probe::new("paint");
         let Some(gc) = NSGraphicsContext::currentContext() else {
             return;
         };
         let cgc = cg();
         let mut depth = 0;
-        for op in &scene.ops {
+        for op in ops {
+            let _op = crate::perf::Probe::new(op_stage(op));
             match op {
                 Op::Fill {
                     rect,
@@ -580,6 +692,168 @@ mod bench {
         #[allow(deprecated)]
         img.unlockFocus();
     }
+
+    /// Cost of drawing a page while its fade runs (`Op::Alpha(open)` around
+    /// the page, as the island emits it), against the fully open page.
+    /// `cargo test --release -p nox-ui perf_alpha -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark, prints timings"]
+    fn perf_alpha() {
+        const RUNS: usize = 300;
+        let mut state = IslandState::default();
+        let art = synthetic_artwork(1200.0);
+        #[cfg(debug_assertions)]
+        {
+            super::super::fixture::overlay(&mut state, nox_core::model::now());
+            if let Some(np) = state.music.as_mut().and_then(|m| m.now_playing.as_mut()) {
+                np.artwork = Some(art.clone());
+                np.artwork_id = 1;
+            }
+        }
+        let src = |id: u64| (id == 1).then(|| art.clone());
+        let settings = Settings::default();
+        let cx = test_util::ctx(&state, &settings);
+        let rect = test_util::page_rect();
+        let img = NSImage::initWithSize(NSImage::alloc(), NSSize::new(700.0, 300.0));
+        #[allow(deprecated)]
+        img.lockFocus();
+        let mut painter = Painter::default();
+        println!("page\topen\tpaint p50/p95/max µs");
+        for sec in [Section::Music, Section::System, Section::Timers] {
+            let mut page = Scene::default();
+            views::page(&mut page, &cx, rect, sec);
+            for open in [1.0, 0.8, 0.6, 0.45] {
+                let mut ops = vec![Op::Alpha(open)];
+                ops.extend(page.ops.iter().cloned());
+                ops.push(Op::Alpha(1.0));
+                let scene = Scene {
+                    ops,
+                    ..Default::default()
+                };
+                let mut paint = Vec::with_capacity(RUNS);
+                for _ in 0..RUNS {
+                    let t = Instant::now();
+                    painter.paint(&scene, &src);
+                    paint.push(t.elapsed().as_secs_f64() * 1e6);
+                }
+                let (p50, p95, pmax) = summary(&mut paint);
+                println!("{sec:?}\t{open}\t{p50:.0}/{p95:.0}/{pmax:.0}");
+            }
+        }
+        #[allow(deprecated)]
+        img.unlockFocus();
+    }
+
+    /// Expands then collapses the island through its model, frame by frame,
+    /// building and drawing each scene as the app does. With `NOX_PERF=1`,
+    /// prints the per-operation timings of the transition frames.
+    /// `NOX_PERF=1 cargo test --release -p nox-ui perf_transition -- --ignored --nocapture`
+    #[test]
+    #[ignore = "benchmark, prints timings"]
+    fn perf_transition() {
+        use crate::geometry::{NotchGeometry, ScreenParams};
+        use crate::island::IslandModel;
+        use nox_core::settings::IslandSilhouette;
+
+        let mut state = IslandState::default();
+        let art = synthetic_artwork(1200.0);
+        #[cfg(debug_assertions)]
+        {
+            super::super::fixture::overlay(&mut state, nox_core::model::now());
+            if let Some(np) = state.music.as_mut().and_then(|m| m.now_playing.as_mut()) {
+                np.artwork = Some(art.clone());
+                np.artwork_id = 1;
+            }
+        }
+        let src = |id: u64| (id == 1).then(|| art.clone());
+        let settings = Settings::default();
+        let geometry = NotchGeometry::new(
+            &ScreenParams {
+                frame: Rect::new(0.0, 0.0, 1470.0, 956.0),
+                visible_frame: Rect::new(0.0, 0.0, 1470.0, 919.0),
+                safe_area_top: 32.0,
+                aux_left: Some(Rect::new(0.0, 924.0, 642.5, 32.0)),
+                aux_right: Some(Rect::new(827.5, 924.0, 642.5, 32.0)),
+                status_bar_thickness: 24.0,
+            },
+            true,
+            IslandSilhouette::Capsule,
+        );
+        let mut model = IslandModel::new(geometry, &settings);
+        let now = 1_800_000_000.0;
+        let rest = model.geometry.compact_size(0.0);
+        model.retarget(&state, &settings, 0.0);
+        model.motion.snap(rest.w, rest.h, false);
+
+        let img = NSImage::initWithSize(NSImage::alloc(), NSSize::new(700.0, 300.0));
+        #[allow(deprecated)]
+        img.lockFocus();
+        let mut painter = Painter::default();
+        let run = |name: &str, model: &mut IslandModel, expand: bool, painter: &mut Painter| {
+            model.machine.pointer(expand, now);
+            // Past any hover or close delay.
+            model.machine.tick(now + 3.0);
+            model.retarget(&state, &settings, now + 3.0);
+            let mut build = Vec::new();
+            let mut paint = Vec::new();
+            let mut first = 0.0;
+            let mut ops = 0;
+            for frame in 0..240 {
+                model.motion.step(1.0 / 120.0);
+                let t = Instant::now();
+                let scene = model.scene(&state, &settings, now, None);
+                build.push(t.elapsed().as_secs_f64() * 1e6);
+                ops = scene.ops.len();
+                let t = Instant::now();
+                painter.paint(&scene, &src);
+                let us = t.elapsed().as_secs_f64() * 1e6;
+                if frame == 0 {
+                    first = us;
+                }
+                paint.push(us);
+                if model.motion.settled() {
+                    break;
+                }
+            }
+            let (b50, b95, bmax) = summary(&mut build);
+            let (p50, p95, pmax) = summary(&mut paint);
+            println!(
+                "{name}: frames={} ops={ops} first paint {first:.0} µs | build p50/p95/max {b50:.0}/{b95:.0}/{bmax:.0} | paint p50/p95/max {p50:.0}/{p95:.0}/{pmax:.0} µs",
+                paint.len()
+            );
+        };
+        if std::env::var("PREPARE").is_ok() {
+            // Scene of the fully open page, prepared before the transition.
+            model.machine.pointer(true, now);
+            model.machine.tick(now + 3.0);
+            model.retarget(&state, &settings, now + 3.0);
+            model
+                .motion
+                .snap(model.motion.w.target, model.motion.h.target, true);
+            let t = Instant::now();
+            painter.prepare(&model.scene(&state, &settings, now, None), &src);
+            println!("prepare {:.0} µs", t.elapsed().as_secs_f64() * 1e6);
+            model.machine.pointer(false, now);
+            model.machine.tick(now + 3.0);
+            model.retarget(&state, &settings, now + 3.0);
+            model.motion.snap(rest.w, rest.h, false);
+        }
+        run("expand", &mut model, true, &mut painter);
+        println!("settled, expanded");
+        crate::perf::drain();
+        run("collapse", &mut model, false, &mut painter);
+        #[allow(deprecated)]
+        img.unlockFocus();
+        if crate::perf::enabled() {
+            for (stage, mut v) in crate::perf::drain() {
+                let (p50, p95, max) = summary(&mut v);
+                println!(
+                    "stage {stage}: n={} p50/p95/max {p50:.1}/{p95:.1}/{max:.1} µs",
+                    v.len()
+                );
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -613,6 +887,51 @@ mod tests {
     }
 
     #[test]
+    fn prepare_fills_the_caches_and_a_frame_size_change_keeps_the_cover() {
+        let art = synthetic_artwork(400.0);
+        let src = |id: u64| (id == 3).then(|| art.clone());
+        let mut scene = Scene::default();
+        scene.symbol(
+            Rect::new(0.0, 0.0, 10.0, 10.0),
+            "play.fill",
+            13.0,
+            Color::WHITE,
+        );
+        scene.text(
+            Rect::new(0.0, 0.0, 50.0, 10.0),
+            "Titre",
+            TextStyle::new(13.0),
+        );
+        scene.ops.push(Op::Artwork {
+            rect: Rect::new(0.0, 0.0, 80.0, 80.0),
+            id: 3,
+            radius: 0.0,
+        });
+        let mut p = Painter::default();
+        p.prepare(&scene, &src);
+        assert_eq!((p.symbols.len(), p.texts.len(), p.artwork.len()), (1, 1, 1));
+        p.prepare(&scene, &src);
+        assert_eq!((p.symbols.len(), p.texts.len(), p.artwork.len()), (1, 1, 1));
+        // A cover resized within its bucket (an animating rect) is reused.
+        let before = p
+            .artwork_image(3, Rect::new(0.0, 0.0, 80.0, 80.0), &src)
+            .expect("cover");
+        let after = p
+            .artwork_image(3, Rect::new(0.0, 0.0, 84.0, 84.0), &src)
+            .expect("cover");
+        assert!(same(&before, &after));
+        assert_eq!(p.artwork.len(), 1);
+        // A new text style gets its own attributes.
+        scene.text(
+            Rect::new(0.0, 0.0, 50.0, 10.0),
+            "Titre",
+            TextStyle::new(11.0),
+        );
+        p.prepare(&scene, &src);
+        assert_eq!(p.texts.len(), 2);
+    }
+
+    #[test]
     fn artwork_is_decoded_once_per_id_and_size() {
         let art = synthetic_artwork(800.0);
         let src = |id: u64| (id == 7).then(|| art.clone());
@@ -621,16 +940,16 @@ mod tests {
         let a = p.artwork_image(7, small, &src).expect("cover");
         assert_eq!(
             a.size().width,
-            200.0,
-            "twice the rect, not the 800 pt source"
+            256.0,
+            "a 128 px bucket, not the 800 pt source"
         );
         assert!(same(&a, &p.artwork_image(7, small, &src).expect("cover")));
         let big = p
             .artwork_image(7, Rect::new(0.0, 0.0, 300.0, 300.0), &src)
             .expect("cover");
-        assert_eq!(big.size().width, 600.0);
+        assert_eq!(big.size().width, 640.0);
         assert!(p.artwork_image(8, small, &src).is_none(), "unknown id");
         p.retain_artwork(&[]);
-        assert!(p.artwork.is_empty());
+        assert!(p.artwork.is_empty() && p.decoded.is_empty());
     }
 }

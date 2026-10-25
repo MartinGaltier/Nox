@@ -2,35 +2,98 @@
 //! auxiliary windows. Woken by the hub (coalesced); timers run only while
 //! something on screen changes (animation, countdown, hover delay, alert TTL).
 
-use super::island_window::{IslandPanel, IslandView};
+use super::island_window::{ContentView, HotZonePanel, HotZoneView, IslandPanel, IslandView};
 use super::painter::Painter;
-use super::util::{Observer, Timer, mono, ns_rect};
+use super::util::{ActionTarget, Observer, Timer, mono, ns_rect};
 use super::{files, haptics, screens};
 use crate::UiContext;
 use crate::geom::{Point, Rect, Size};
-use crate::geometry::{NotchGeometry, island_contains};
+use crate::geometry::{NotchGeometry, ignores_clicks, island_contains};
 use crate::gesture::{GestureAction, ScrollInput, movement};
 use crate::island::{IslandModel, Surface, machine_config};
 use crate::machine::Mode;
-use crate::scene::{Action, Scene};
+use crate::scene::{Action, Group, LayeredScene};
+use block2::RcBlock;
 use nox_core::model::files::FileCommand;
 use nox_core::model::music::MusicCommand;
 use nox_core::model::watch::WatchCommand;
 use nox_core::{Command, Hub, IslandState, Section, Settings, SettingsStore};
 use objc2::rc::Retained;
+use objc2::runtime::AnyObject;
 use objc2::{MainThreadMarker, msg_send};
 use objc2_app_kit::{
     NSAppearanceCustomization, NSApplicationDidChangeScreenParametersNotification, NSColor,
-    NSEvent, NSEventPhase, NSPasteboardTypeFileURL, NSWindowCollectionBehavior,
-    NSWindowSharingType, NSWorkspace, NSWorkspaceActiveSpaceDidChangeNotification,
-    NSWorkspaceDidActivateApplicationNotification,
+    NSEvent, NSEventMask, NSEventPhase, NSPasteboardTypeFileURL, NSView,
+    NSWindowCollectionBehavior, NSWindowSharingType, NSWorkspace,
+    NSWorkspaceActiveSpaceDidChangeNotification, NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2_core_graphics::CGContext;
-use objc2_foundation::{NSArray, NSNotificationCenter};
+use objc2_foundation::{NSArray, NSNotificationCenter, NSRunLoop, NSRunLoopCommonModes};
+use objc2_quartz_core::{CADisplayLink, CAShapeLayer, CATransaction};
 use std::cell::RefCell;
 use std::collections::HashMap;
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::Arc;
+
+/// Room around the largest island in the fixed window: shadow on each side,
+/// and below the island.
+const SHADOW_X: f64 = 24.0;
+const SHADOW_BOTTOM: f64 = 32.0;
+
+/// Widest compact activity wing (the strip's wings), and the margin added
+/// around the compact shape for the hot zone.
+const HOT_WING: f64 = 64.0;
+const HOT_MARGIN: f64 = 6.0;
+
+/// Hot zone: a small window under the compact island, above the menu bar,
+/// that always takes the pointer. The island window itself ignores clicks
+/// outside its shape, so this is what the pointer meets to re-enter it.
+fn hot_zone_frame(geometry: &NotchGeometry) -> Rect {
+    geometry.hot_zone(HOT_WING, HOT_MARGIN)
+}
+
+/// Size of the fixed panel: the largest island the settings allow, plus room
+/// for its shadow. Recomputed only when the screen or the settings change.
+fn window_size(geometry: &NotchGeometry, settings: &Settings) -> Size {
+    let e = geometry.expanded_size(&settings.island);
+    Size::new(e.w.ceil() + 2.0 * SHADOW_X, e.h.ceil() + SHADOW_BOTTOM)
+}
+
+/// Display-synchronised clock for the animation: a `CADisplayLink` from the
+/// view, so it follows the view's screen and refresh rate. It runs only while
+/// something animates and is invalidated when dropped.
+struct FrameClock {
+    link: Retained<CADisplayLink>,
+    _target: Retained<ActionTarget>,
+}
+
+impl FrameClock {
+    fn start(view: &NSView) -> Self {
+        let mtm = MainThreadMarker::new().expect("the animation clock runs on the main thread");
+        let target = ActionTarget::new(mtm, |_: &AnyObject| {
+            if let Some(a) = get() {
+                a.tick_animation();
+            }
+        });
+        // SAFETY: `ActionTarget::selector()` is `fire:`, which takes the link
+        // as its only argument, and the link retains the target.
+        let link =
+            unsafe { view.displayLinkWithTarget_selector(&target, ActionTarget::selector()) };
+        // SAFETY: the main run loop and its common modes are static Foundation values.
+        unsafe { link.addToRunLoop_forMode(&NSRunLoop::mainRunLoop(), NSRunLoopCommonModes) };
+        Self {
+            link,
+            _target: target,
+        }
+    }
+}
+
+impl Drop for FrameClock {
+    fn drop(&mut self) {
+        self.link.invalidate();
+    }
+}
 
 thread_local! {
     static APP: RefCell<Option<Rc<App>>> = const { RefCell::new(None) };
@@ -76,13 +139,13 @@ struct Inner {
     state: IslandState,
     model: IslandModel,
     painter: Painter,
-    scene: Scene,
     hover: Option<Point>,
-    /// Shape offset inside the view (the window is the animation's bounding box).
+    /// Left edge of the shape inside the view (the window is fixed, see `fit_window`).
     offset: f64,
-    anim: Option<Timer>,
+    /// The fixed window frame, global AppKit coordinates.
+    frame: Rect,
+    anim: Option<FrameClock>,
     last_tick: f64,
-    anim_box: Size,
     deadline: Option<Timer>,
     refresh: Option<Timer>,
     metrics_sent: Option<bool>,
@@ -97,8 +160,39 @@ struct Inner {
     /// Region selection asked; the overlay opens once watch reports Selecting.
     pending_selection: Option<nox_core::model::watch::WatchTrigger>,
     /// Damage of the last relayout, consumed when invalidating the view.
-    damage: Option<crate::scene::Damage>,
     dragging_files: bool,
+    /// Layer content of the closed strip (0) and of the open page (1).
+    content: [LayerContent; 2],
+    /// Scene layers of the current frame: content, hits and scroll extent.
+    layers: LayeredScene,
+}
+
+impl Inner {
+    /// The action under a view point: the open page's hits first, then the
+    /// closed strip's. Hits are in each group's own coordinates.
+    fn action_at(&self, p: Point) -> Option<Action> {
+        [&self.layers.page, &self.layers.closed]
+            .into_iter()
+            .find_map(|group| {
+                let local = Point::new(p.x - (group.origin.x - self.frame.x), p.y);
+                group
+                    .hits
+                    .iter()
+                    .rev()
+                    .find(|h| h.rect.contains(local))
+                    .map(|h| h.action.clone())
+            })
+    }
+}
+
+/// One content layer: the group it draws, and where its origin sits in the view.
+#[derive(Default)]
+struct LayerContent {
+    group: Group,
+    /// Group origin in view coordinates (the window is fixed).
+    view_x: f64,
+    /// Generation of `group` as drawn, `None` before the first update.
+    generation: Option<u64>,
 }
 
 pub struct App {
@@ -111,12 +205,19 @@ pub struct App {
     inner: RefCell<Inner>,
     panel: Retained<IslandPanel>,
     view: Retained<IslandView>,
+    hot_panel: Retained<HotZonePanel>,
+    hot_view: Retained<HotZoneView>,
+    closed_view: Retained<ContentView>,
+    page_view: Retained<ContentView>,
+    closed_mask: Retained<CAShapeLayer>,
+    page_mask: Retained<CAShapeLayer>,
     observers: RefCell<Vec<Observer>>,
     pub status: RefCell<Option<super::status::StatusBar>>,
     pub settings_window: RefCell<Option<super::settings_window::SettingsWindow>>,
     pub monitor_window: RefCell<Option<super::monitor_window::MonitorWindow>>,
     pub overlay: RefCell<Option<super::overlay::SelectionOverlay>>,
     hotkey: RefCell<Option<super::hotkey::HotKey>>,
+    pointer_monitor: RefCell<Option<Retained<AnyObject>>>,
 }
 
 impl App {
@@ -150,10 +251,31 @@ impl App {
         );
         let model = IslandModel::new(geometry, &settings);
         let size = model.size();
-        let frame = geometry.panel_frame(size);
+        let frame = geometry.window_frame(window_size(&geometry, &settings));
+        let hot = hot_zone_frame(&geometry);
+        let offset = geometry.shape_x(size.w) - frame.x;
         let panel = IslandPanel::new(mtm, ns_rect(frame));
         let view = IslandView::new(mtm, ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h)));
         configure_panel(&panel, &view, &settings);
+        // Clicks pass through until the pointer is over the shape.
+        panel.setIgnoresMouseEvents(true);
+        // Content layers: transparent subviews above the silhouette, each masked to it.
+        let full = ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h));
+        let closed_view = ContentView::new(mtm, full, false);
+        let page_view = ContentView::new(mtm, full, true);
+        let closed_mask = CAShapeLayer::new();
+        let page_mask = CAShapeLayer::new();
+        for (v, m) in [(&closed_view, &closed_mask), (&page_view, &page_mask)] {
+            v.setWantsLayer(true);
+            view.addSubview(v);
+            if let Some(layer) = v.layer() {
+                // SAFETY: the mask is a CAShapeLayer owned by the controller for the app's lifetime.
+                unsafe { layer.setMask(Some(m)) };
+            }
+        }
+        let hot_panel = HotZonePanel::new(mtm, ns_rect(hot));
+        let hot_view = HotZoneView::new(mtm, ns_rect(Rect::new(0.0, 0.0, hot.w, hot.h)));
+        configure_hot_panel(&hot_panel, &hot_view, &settings);
 
         let debug = DebugOptions::from_env();
         let app = Rc::new(App {
@@ -168,12 +290,12 @@ impl App {
                 state: IslandState::default(),
                 model,
                 painter: Painter::default(),
-                scene: Scene::default(),
+                layers: LayeredScene::default(),
                 hover: None,
-                offset: 0.0,
+                offset,
+                frame,
                 anim: None,
                 last_tick: 0.0,
-                anim_box: size,
                 deadline: None,
                 refresh: None,
                 metrics_sent: None,
@@ -186,17 +308,24 @@ impl App {
                 music_visible: false,
                 mixer_visible: false,
                 pending_selection: None,
-                damage: None,
                 dragging_files: false,
+                content: [LayerContent::default(), LayerContent::default()],
             }),
             panel,
             view,
+            hot_panel,
+            hot_view,
+            closed_view,
+            page_view,
+            closed_mask,
+            page_mask,
             observers: RefCell::new(vec![]),
             status: RefCell::new(None),
             settings_window: RefCell::new(None),
             monitor_window: RefCell::new(None),
             overlay: RefCell::new(None),
             hotkey: RefCell::new(None),
+            pointer_monitor: RefCell::new(None),
         });
         APP.with(|a| *a.borrow_mut() = Some(app.clone()));
         app.after_install();
@@ -252,11 +381,13 @@ impl App {
                 i.model.machine.hold(true, mono());
             }
         }
-        self.panel.orderFrontRegardless();
+        self.show_hot_zone();
         self.on_wake();
         self.update_fullscreen();
         #[cfg(debug_assertions)]
         super::snapshot::schedule(self);
+        #[cfg(any(debug_assertions, feature = "hover-probe"))]
+        super::hover_probe::schedule(self);
     }
 
     #[cfg(debug_assertions)]
@@ -369,34 +500,30 @@ impl App {
             model.alerts.tick(now_m);
             model.retarget(state, settings, nox_core::model::now())
         };
+        let open = self.inner.borrow().model.machine.mode == Mode::Expanded;
+        self.set_pointer_monitor(open);
         if animating {
             self.start_animation();
         } else {
-            self.apply_frame(true);
+            self.apply_frame();
         }
         self.relayout();
         self.schedule_deadline();
     }
 
     fn start_animation(&self) {
-        let mut i = self.inner.borrow_mut();
-        let target = Size::new(i.model.motion.w.target, i.model.motion.h.target);
-        let cur = i.model.size();
-        let b = i.anim_box;
-        i.anim_box = Size::new(b.w.max(target.w).max(cur.w), b.h.max(target.h).max(cur.h));
-        if i.anim.is_none() {
+        let idle = self.inner.borrow().anim.is_none();
+        if idle {
+            let clock = FrameClock::start(&self.view);
+            let mut i = self.inner.borrow_mut();
             i.last_tick = mono();
-            i.anim = Some(Timer::new(1.0 / 120.0, true, || {
-                if let Some(a) = get() {
-                    a.tick_animation();
-                }
-            }));
+            i.anim = Some(clock);
         }
-        drop(i);
-        self.apply_frame(false);
+        self.apply_frame();
     }
 
     fn tick_animation(&self) {
+        let _p = crate::perf::Probe::new("tick");
         let settled = {
             let mut i = self.inner.borrow_mut();
             let t = mono();
@@ -406,67 +533,123 @@ impl App {
             i.model.motion.settled()
         };
         if settled {
-            {
-                let mut i = self.inner.borrow_mut();
-                i.anim = None;
-                i.anim_box = i.model.size();
-            }
-            self.apply_frame(true);
+            // Dropping the clock invalidates the display link.
+            self.inner.borrow_mut().anim = None;
+        }
+        self.apply_frame();
+        if settled {
             self.panel.invalidateShadow();
             self.recheck_pointer();
         }
         self.relayout();
     }
 
-    /// Positions the panel. During an animation the window keeps the
-    /// bounding box of all sizes involved (two resizes per animation).
-    fn apply_frame(&self, settled: bool) {
-        let (frame, offset, expanded) = {
+    /// Places the shape for the size drawn now: its centre stays on the camera
+    /// at every frame, inside the fixed window (no window resize while animating).
+    fn apply_frame(&self) {
+        let (expanded, open, size, offset, floats, capsule) = {
             let mut i = self.inner.borrow_mut();
             let size = i.model.size();
-            let bx = if settled {
-                i.anim_box = size;
-                size
-            } else {
-                i.anim_box
-            };
-            let f = i.model.geometry.panel_frame(bx);
-            i.offset = (f.w - size.w) / 2.0;
-            (f, i.offset, i.model.motion.open.value > 0.5)
+            i.offset = i.model.geometry.shape_x(size.w) - i.frame.x;
+            let open = i.model.motion.open.value.clamp(0.0, 1.0);
+            let capsule = i.model.capsule_compact();
+            let floats = i.model.geometry.floating_gap;
+            (open > 0.5, open, size, i.offset, floats, capsule)
         };
-        let _ = offset;
-        let cur = super::util::rect(self.panel.frame());
-        if cur != frame {
-            self.inner.borrow_mut().damage = Some(crate::scene::Damage::All);
-            self.panel.setFrame_display(ns_rect(frame), false);
-            self.view
-                .setFrame(ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h)));
-        }
         self.panel.setHasShadow(expanded);
+        // The silhouette is the island view's own drawing: it follows the size.
+        self.view.setNeedsDisplay(true);
+        // Cross-fade and reveal by layer properties only: no content is redrawn.
+        let shape = super::painter::path(
+            &crate::geometry::island_path(size, floats, capsule),
+            offset,
+            0.0,
+        )
+        .CGPath();
+        CATransaction::begin();
+        CATransaction::setDisableActions(true);
+        let layers = [
+            (&self.closed_view, &self.closed_mask, 1.0 - open),
+            (&self.page_view, &self.page_mask, open),
+        ];
+        for (view, mask, alpha) in layers {
+            mask.setPath(Some(&shape));
+            if let Some(layer) = view.layer() {
+                layer.setOpacity(alpha as f32);
+            }
+        }
+        CATransaction::commit();
+    }
+
+    /// The hot zone only takes the pointer while hover expands the island and
+    /// the island is not hidden for a fullscreen app. It stays below the island.
+    fn show_hot_zone(&self) {
+        let on = {
+            let i = self.inner.borrow();
+            i.settings.island.expand_on_hover && !i.hidden_fullscreen
+        };
+        if on {
+            self.hot_panel.orderFrontRegardless();
+            self.panel.orderFrontRegardless();
+        } else {
+            self.hot_panel.orderOut(None);
+        }
+    }
+
+    /// Sizes the fixed window for the current screen and settings. Called only
+    /// when either changes, never per frame.
+    fn fit_window(&self) {
+        let hot = hot_zone_frame(&self.inner.borrow().model.geometry);
+        self.hot_panel.setFrame_display(ns_rect(hot), false);
+        self.hot_view
+            .setFrame(ns_rect(Rect::new(0.0, 0.0, hot.w, hot.h)));
+        self.show_hot_zone();
+        let frame = {
+            let i = self.inner.borrow();
+            i.model
+                .geometry
+                .window_frame(window_size(&i.model.geometry, &i.settings))
+        };
+        if frame == self.inner.borrow().frame {
+            return;
+        }
+        self.inner.borrow_mut().frame = frame;
+        self.panel.setFrame_display(ns_rect(frame), false);
+        self.view
+            .setFrame(ns_rect(Rect::new(0.0, 0.0, frame.w, frame.h)));
     }
 
     fn relayout(&self) {
         let (shows_metrics, shows_camera, refresh, extent, section) = {
             let mut i = self.inner.borrow_mut();
             let hover = i.hover.map(|p| Point::new(p.x - i.offset, p.y));
-            let scene = i
+            let layers = i
                 .model
-                .scene(&i.state, &i.settings, nox_core::model::now(), hover);
+                .layers(&i.state, &i.settings, nox_core::model::now(), hover);
+            {
+                // Covers, symbols and text attributes are made here, before a
+                // transition needs them, not in its first draw.
+                let Inner {
+                    painter, artwork, ..
+                } = &mut *i;
+                let art = |id: u64| artwork.get(&id).cloned();
+                painter.prepare_group(&layers.closed, &art);
+                painter.prepare_group(&layers.page, &art);
+            }
             let r = (
-                scene.shows_metrics,
-                scene.shows_camera,
-                scene.refresh,
-                scene.scroll_extent,
+                layers.shows_metrics,
+                layers.shows_camera,
+                layers.refresh,
+                layers.scroll_extent,
                 i.model.current_section(&i.settings),
             );
-            let dmg = crate::scene::damage(&i.scene, &scene);
-            i.scene = scene;
-            i.damage = Some(dmg);
+            i.layers = layers;
             r
         };
         if let Some(sec) = section {
             self.inner.borrow_mut().model.clamp_scroll(sec, extent);
         }
+        self.update_layers();
         let expanded_page = self.inner.borrow().model.machine.mode == Mode::Expanded;
         // One-shot refreshes when a page appears (never polled).
         let shown = section.filter(|_| expanded_page);
@@ -525,8 +708,9 @@ impl App {
                 }
             })
         });
-        let editor_rect = i.scene.ops.iter().find_map(|o| match o {
-            crate::scene::Op::TextEditor { rect } => Some(rect.offset(i.offset, 0.0)),
+        let page_x = i.layers.page.origin.x - i.frame.x;
+        let editor_rect = i.layers.page.ops.iter().find_map(|o| match o {
+            crate::scene::Op::TextEditor { rect } => Some(rect.offset(page_x, 0.0)),
             _ => None,
         });
         let initial = i
@@ -535,20 +719,8 @@ impl App {
             .as_ref()
             .map(|p| p.text.clone())
             .unwrap_or_default();
-        let dmg = i.damage.take();
-        let (offset, animating) = (i.offset, i.anim.is_some());
         drop(i);
         super::editor::sync(&self.view, editor_rect, || initial);
-        // Unchanged scene: nothing to draw; a small change (equalizer bars,
-        // countdown digits): only that rectangle.
-        match dmg {
-            _ if animating => self.view.setNeedsDisplay(true),
-            Some(crate::scene::Damage::None) => {}
-            Some(crate::scene::Damage::Rect(r)) => self
-                .view
-                .setNeedsDisplayInRect(super::util::ns_rect(r.offset(offset, 0.0))),
-            _ => self.view.setNeedsDisplay(true),
-        }
     }
 
     fn content_tick(&self) {
@@ -613,8 +785,10 @@ impl App {
 
     // ---------- drawing ----------
 
+    /// Draws the silhouette only; the content is in the content layers.
     pub fn draw_island(&self) {
-        let Ok(mut i) = self.inner.try_borrow_mut() else {
+        let _p = crate::perf::Probe::new("draw");
+        let Ok(i) = self.inner.try_borrow_mut() else {
             return;
         };
         let size = i.model.size();
@@ -654,26 +828,73 @@ impl App {
             path.setLineWidth(1.5);
             path.stroke();
         }
-        gc.saveGraphicsState();
-        path.addClip();
-        let Inner {
-            painter,
-            scene,
-            artwork,
-            ..
-        } = &mut *i;
-        let art = |id: u64| artwork.get(&id).cloned();
-        painter.paint(scene, &art);
-        gc.restoreGraphicsState();
         CGContext::restore_g_state(Some(&cg));
         // Position the camera host layer if the page shows it.
-        let host = scene.ops.iter().find_map(|o| match o {
+        let page_x = i.layers.page.origin.x - i.frame.x;
+        let host = i.layers.page.ops.iter().find_map(|o| match o {
             crate::scene::Op::CameraHost { rect, radius } => {
-                Some((rect.offset(offset, 0.0), *radius))
+                Some((rect.offset(page_x, 0.0), *radius))
             }
             _ => None,
         });
         super::camera::place(host);
+    }
+
+    /// Draws one content layer at full alpha (its opacity is animated).
+    pub fn draw_content(&self, page: bool) {
+        let _p = crate::perf::Probe::new(if page { "draw page" } else { "draw closed" });
+        let Ok(mut i) = self.inner.try_borrow_mut() else {
+            return;
+        };
+        let Some(gc) = objc2_app_kit::NSGraphicsContext::currentContext() else {
+            return;
+        };
+        let cg = gc.CGContext();
+        CGContext::save_g_state(Some(&cg));
+        let Inner {
+            painter,
+            artwork,
+            content,
+            ..
+        } = &mut *i;
+        let layer = &content[page as usize];
+        CGContext::translate_ctm(Some(&cg), layer.view_x, 0.0);
+        let art = |id: u64| artwork.get(&id).cloned();
+        painter.paint_group(&layer.group, &art);
+        CGContext::restore_g_state(Some(&cg));
+    }
+
+    /// Hands the two layer groups to their content layers. A group is copied
+    /// and its layer redrawn only when its generation changes; animation frames
+    /// only change opacity and masks.
+    fn update_layers(&self) {
+        let changed = {
+            let mut i = self.inner.borrow_mut();
+            let Inner {
+                layers,
+                content,
+                frame,
+                ..
+            } = &mut *i;
+            let groups = [&layers.closed, &layers.page];
+            let mut changed = [false; 2];
+            for (idx, group) in groups.into_iter().enumerate() {
+                let layer = &mut content[idx];
+                if layer.generation != Some(group.generation) {
+                    layer.group = group.clone();
+                    layer.view_x = group.origin.x - frame.x;
+                    layer.generation = Some(group.generation);
+                    changed[idx] = true;
+                }
+            }
+            changed
+        };
+        if changed[0] {
+            self.closed_view.setNeedsDisplay(true);
+        }
+        if changed[1] {
+            self.page_view.setNeedsDisplay(true);
+        }
     }
 
     // ---------- pointer ----------
@@ -691,14 +912,33 @@ impl App {
         )
     }
 
+    /// Probe: the pointer enters the middle of the island or leaves it.
+    #[cfg(any(debug_assertions, feature = "hover-probe"))]
+    pub fn debug_hover(&self, inside: bool) {
+        let p = inside.then(|| {
+            let f = super::util::rect(self.panel.frame());
+            Point::new(f.w / 2.0, 10.0)
+        });
+        self.pointer_moved(p);
+    }
+
     pub fn pointer_moved(&self, p: Option<Point>) {
         let inside = p.is_some_and(|p| self.shape_contains(p));
+        // Outside the shape the window takes no clicks, so the menu bar beside
+        // the island stays usable.
+        if self.panel.ignoresMouseEvents() == inside {
+            self.panel.setIgnoresMouseEvents(ignores_clicks(inside));
+        }
         let redraw = {
             let mut i = self.inner.borrow_mut();
+            let had_hover = i.hover.is_some();
             i.hover = p.filter(|_| inside);
             let before = i.model.machine.mode;
             i.model.machine.pointer(inside, mono());
-            i.model.machine.mode != before || i.model.machine.mode == Mode::Expanded
+            // Hover highlights need a redraw only while the pointer is on the page.
+            i.model.machine.mode != before
+                || (inside && i.model.machine.mode == Mode::Expanded)
+                || (had_hover && !inside)
         };
         if redraw {
             self.update();
@@ -707,22 +947,59 @@ impl App {
         }
     }
 
-    fn recheck_pointer(&self) {
+    /// Pointer in the island's view coordinates, if it is inside the window.
+    fn pointer_in_panel(&self) -> Option<Point> {
         let m = NSEvent::mouseLocation();
         let f = super::util::rect(self.panel.frame());
         let p = Point::new(m.x - f.x, f.max_y() - m.y);
         let inside_window = p.x >= 0.0 && p.y >= 0.0 && p.x <= f.w && p.y <= f.h;
-        self.pointer_moved(inside_window.then_some(p));
+        inside_window.then_some(p)
+    }
+
+    fn recheck_pointer(&self) {
+        self.pointer_moved(self.pointer_in_panel());
+    }
+
+    /// The hot zone was entered, left or moved over.
+    pub fn hot_zone_event(&self) {
+        self.recheck_pointer();
+    }
+
+    /// A click on the hot zone (the island ignores clicks there): the island
+    /// takes the pointer and handles the click as if it had received it.
+    pub fn hot_zone_click(&self) {
+        let Some(p) = self.pointer_in_panel() else {
+            return;
+        };
+        self.pointer_moved(Some(p));
+        if self.shape_contains(p) {
+            self.mouse_down(p);
+        }
+    }
+
+    /// Global mouse movement is watched only while the island is open: it lets
+    /// the pointer come back into an open shape the window ignores (mouse moves
+    /// need no Accessibility permission). Nothing is watched at rest.
+    fn set_pointer_monitor(&self, on: bool) {
+        let mut monitor = self.pointer_monitor.borrow_mut();
+        if on && monitor.is_none() {
+            let block = RcBlock::new(|_e: NonNull<NSEvent>| {
+                if let Some(a) = get() {
+                    a.recheck_pointer();
+                }
+            });
+            let mask = NSEventMask::MouseMoved | NSEventMask::LeftMouseDragged;
+            *monitor = NSEvent::addGlobalMonitorForEventsMatchingMask_handler(mask, &block);
+        } else if !on && let Some(old) = monitor.take() {
+            // SAFETY: the token was returned by addGlobalMonitorForEvents and is removed once.
+            unsafe { NSEvent::removeMonitor(&old) };
+        }
     }
 
     pub fn mouse_down(&self, p: Point) {
         let (hit, mode) = {
             let i = self.inner.borrow();
-            let local = Point::new(p.x - i.offset, p.y);
-            (
-                i.scene.hit_at(local).map(|h| h.action.clone()),
-                i.model.machine.mode,
-            )
+            (i.action_at(p), i.model.machine.mode)
         };
         match hit {
             Some(Action::Seek { x, w, duration }) => {
@@ -762,7 +1039,7 @@ impl App {
         let action = {
             let mut i = self.inner.borrow_mut();
             let in_header = p.y < i.model.geometry.camera_height + 4.0;
-            let extent = i.scene.scroll_extent;
+            let extent = i.layers.scroll_extent;
             let settings = i.settings.clone();
             i.model.scroll(input, &settings, in_header, extent)
         };
@@ -958,6 +1235,7 @@ impl App {
         }
         (self.on_settings_changed)(s.clone());
         configure_panel(&self.panel, &self.view, &s);
+        self.hot_panel.setSharingType(sharing_type(&s));
         self.apply_hotkey();
         self.screens_changed();
     }
@@ -1002,7 +1280,8 @@ impl App {
             i.model.motion.snap(size.w, size.h, open);
             i.anim = None;
         }
-        self.apply_frame(true);
+        self.fit_window();
+        self.apply_frame();
         self.update_fullscreen();
         self.update();
     }
@@ -1023,8 +1302,9 @@ impl App {
         if changed {
             if covered {
                 self.panel.orderOut(None);
+                self.hot_panel.orderOut(None);
             } else {
-                self.panel.orderFrontRegardless();
+                self.show_hot_zone();
             }
             self.update();
         }
@@ -1086,6 +1366,35 @@ impl App {
     }
 }
 
+/// Excluded from screen captures when the settings ask for it.
+fn sharing_type(s: &Settings) -> NSWindowSharingType {
+    if s.island.hide_in_captures {
+        NSWindowSharingType::None
+    } else {
+        NSWindowSharingType::ReadOnly
+    }
+}
+
+/// The hot zone window: same level and spaces as the island, never shadowed.
+fn configure_hot_panel(panel: &HotZonePanel, view: &HotZoneView, s: &Settings) {
+    panel.setOpaque(false);
+    panel.setBackgroundColor(Some(&NSColor::clearColor()));
+    panel.setHasShadow(false);
+    panel.setLevel(objc2_app_kit::NSStatusWindowLevel + 1);
+    panel.setCollectionBehavior(
+        NSWindowCollectionBehavior::CanJoinAllSpaces
+            | NSWindowCollectionBehavior::Stationary
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::IgnoresCycle,
+    );
+    panel.setHidesOnDeactivate(false);
+    // SAFETY: the panel is owned by the controller; it must not free itself.
+    unsafe { panel.setReleasedWhenClosed(false) };
+    panel.setMovable(false);
+    panel.setSharingType(sharing_type(s));
+    panel.setContentView(Some(view));
+}
+
 fn configure_panel(panel: &IslandPanel, view: &IslandView, s: &Settings) {
     panel.setOpaque(false);
     panel.setBackgroundColor(Some(&NSColor::clearColor()));
@@ -1102,11 +1411,7 @@ fn configure_panel(panel: &IslandPanel, view: &IslandView, s: &Settings) {
     // SAFETY: the panel is owned by the controller; it must not free itself.
     unsafe { panel.setReleasedWhenClosed(false) };
     panel.setMovable(false);
-    panel.setSharingType(if s.island.hide_in_captures {
-        NSWindowSharingType::None
-    } else {
-        NSWindowSharingType::ReadOnly
-    });
+    panel.setSharingType(sharing_type(s));
     if let Some(dark) = objc2_app_kit::NSAppearance::appearanceNamed(
         // SAFETY: static appearance name provided by AppKit.
         unsafe { objc2_app_kit::NSAppearanceNameDarkAqua },

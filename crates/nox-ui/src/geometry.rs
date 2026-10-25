@@ -138,20 +138,37 @@ impl NotchGeometry {
         )
     }
 
-    /// Panel frame (AppKit global space) for a surface of `size`, hanging from
-    /// the top edge and centred on the camera.
-    pub fn panel_frame(&self, size: Size) -> Rect {
-        let x = (self.center_x - size.w / 2.0).round();
+    /// Fixed panel frame (AppKit global space) holding the largest island
+    /// `max` for the whole session: hangs from the top edge and is centred
+    /// on the camera with whole points, so it never moves while animating.
+    pub fn window_frame(&self, max: Size) -> Rect {
+        let x = (self.center_x - max.w / 2.0).round();
         let x = x.clamp(
             self.screen.x,
-            (self.screen.max_x() - size.w).max(self.screen.x),
+            (self.screen.max_x() - max.w).max(self.screen.x),
         );
-        Rect::new(
-            x,
-            self.screen.max_y() - size.h.ceil(),
-            size.w.ceil(),
-            size.h.ceil(),
-        )
+        Rect::new(x, self.screen.max_y() - max.h, max.w, max.h)
+    }
+
+    /// Hot zone under the compact island: the widest compact shape (activity
+    /// wings of `wing` on each side) plus `margin`, hanging from the top edge.
+    /// It stays inside the menu bar and does not move with the island.
+    pub fn hot_zone(&self, wing: f64, margin: f64) -> Rect {
+        let c = self.compact_size(wing);
+        self.window_frame(Size::new(c.w + 2.0 * margin, c.h + margin))
+    }
+
+    /// Whether the island window ignores mouse events at a pointer position: it
+    /// takes them only over its shape. Elsewhere they pass through to the menu bar
+    /// beside it (the hot zone under the compact island is a separate window).
+    pub fn ignores_clicks(over_shape: bool) -> bool {
+        !over_shape
+    }
+
+    /// Left edge of a shape `width` wide, centred on the camera and snapped to
+    /// half points (a whole pixel on 2x displays), in AppKit global space.
+    pub fn shape_x(&self, width: f64) -> f64 {
+        ((self.center_x - width / 2.0) * 2.0).round() / 2.0
     }
 
     /// Rect of the camera housing in a view of width `view_w` (flipped).
@@ -206,6 +223,13 @@ fn rounded_rect(path: &mut Vec<Seg>, r: Rect, radius: f64) {
         Point::new(l + c, t),
     ));
     path.push(Seg::Close);
+}
+
+/// Whether the island window ignores mouse events at a pointer position: it
+/// takes them only over its shape. Elsewhere they pass through to the menu bar
+/// beside it (the hot zone under the compact island is a separate window).
+pub fn ignores_clicks(over_shape: bool) -> bool {
+    !over_shape
 }
 
 /// The silhouette. `floating_gap` = capsule; `compact` rounds a capsule fully.
@@ -350,10 +374,13 @@ mod tests {
         assert_eq!(g.camera_height, 32.0);
         assert_eq!(g.center_x, 735.0);
         assert_eq!(g.floating_gap, None, "a real notch never floats");
-        let f = g.panel_frame(g.compact_size(0.0));
+        let f = g.window_frame(Size::new(185.0, 32.0));
         assert_eq!(f, Rect::new(643.0, 924.0, 185.0, 32.0));
         // Hangs flush with the top edge.
         assert_eq!(f.max_y(), 956.0);
+        // Centred on 735: 642.5 is already a half point.
+        assert_eq!(g.shape_x(185.0), 642.5);
+        assert_eq!(g.shape_x(186.0), 642.0);
     }
 
     #[test]
@@ -435,5 +462,44 @@ mod tests {
         assert!(p.contains(&Seg::Line(Point::new(300.0, 0.0))));
         let c = island_path(Size::new(300.0, 24.0), Some(2.0), true);
         assert_eq!(c.last(), Some(&Seg::Close));
+    }
+    #[test]
+    fn hot_zone_covers_the_widest_compact_shape_inside_the_menu_bar() {
+        let g = NotchGeometry::new(&m2_air(), true, IslandSilhouette::Capsule);
+        let hot = g.hot_zone(64.0, 6.0);
+        // Hangs from the top edge, no taller than the menu bar strip it sits in.
+        assert_eq!(hot.max_y(), g.screen.max_y());
+        assert!(hot.h <= g.bar_height + 1.0);
+        // Every compact shape, with the widest wings, lies inside it.
+        for wing in [0.0, 40.0, 64.0] {
+            let c = g.compact_size(wing);
+            let left = g.shape_x(c.w);
+            assert!(left >= hot.x && left + c.w <= hot.max_x(), "wing {wing}");
+            assert!(c.h <= hot.h, "wing {wing}");
+        }
+    }
+
+    #[test]
+    fn island_ignores_clicks_only_outside_its_shape() {
+        assert!(ignores_clicks(false));
+        assert!(!ignores_clicks(true));
+    }
+    #[test]
+    fn hot_zone_on_a_flat_display_hangs_centred_from_the_top() {
+        let flat = ScreenParams {
+            frame: Rect::new(0.0, 0.0, 1440.0, 900.0),
+            visible_frame: Rect::new(0.0, 0.0, 1440.0, 875.0),
+            safe_area_top: 0.0,
+            aux_left: None,
+            aux_right: None,
+            status_bar_thickness: 24.0,
+        };
+        let g = NotchGeometry::new(&flat, true, IslandSilhouette::Capsule);
+        assert!(!g.notched);
+        let hot = g.hot_zone(64.0, 6.0);
+        assert_eq!(hot.max_y(), 900.0);
+        // Whole-point origin: the centre may be half a point off for odd widths.
+        assert!((hot.x + hot.w / 2.0 - 720.0).abs() <= 0.5);
+        assert!(hot.x >= 0.0 && hot.max_x() <= 1440.0);
     }
 }

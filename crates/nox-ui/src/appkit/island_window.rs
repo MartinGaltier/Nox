@@ -207,6 +207,182 @@ define_class!(
     }
 );
 
+define_class!(
+    // SAFETY: NSPanel may be subclassed; no Drop impl, no ivars.
+    #[unsafe(super(NSPanel, NSWindow, NSResponder, objc2::runtime::NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NoxHotZonePanel"]
+    pub struct HotZonePanel;
+
+    impl HotZonePanel {
+        // Never key, never main: the hot zone must not take the keyboard,
+        // even while the scratchpad editor is on screen.
+        #[unsafe(method(canBecomeKeyWindow))]
+        fn can_become_key(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(canBecomeMainWindow))]
+        fn can_become_main(&self) -> bool {
+            false
+        }
+    }
+);
+
+impl HotZonePanel {
+    pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(());
+        // SAFETY: designated NSWindow initialiser with valid arguments; the same
+        // non-activating borderless style as the island panel.
+        unsafe {
+            msg_send![super(this), initWithContentRect: frame,
+                styleMask: NSWindowStyleMask::Borderless | NSWindowStyleMask::NonactivatingPanel,
+                backing: NSBackingStoreType::Buffered,
+                defer: false]
+        }
+    }
+}
+
+define_class!(
+    // SAFETY: NSView may be subclassed; no Drop impl; ivars are main-thread only.
+    #[unsafe(super(NSView, NSResponder, objc2::runtime::NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NoxHotZoneView"]
+    #[ivars = ViewIvars]
+    pub struct HotZoneView;
+
+    impl HotZoneView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(acceptsFirstMouse:))]
+        fn accepts_first_mouse(&self, _e: Option<&NSEvent>) -> bool {
+            true
+        }
+
+        #[unsafe(method(updateTrackingAreas))]
+        fn update_tracking_areas(&self) {
+            refresh_tracking(self, &self.ivars().tracking);
+            // SAFETY: calling the superclass implementation.
+            let _: () = unsafe { msg_send![super(self), updateTrackingAreas] };
+        }
+
+        #[unsafe(method(mouseEntered:))]
+        fn mouse_entered(&self, _e: &NSEvent) {
+            if let Some(a) = app::get() {
+                a.hot_zone_event();
+            }
+        }
+
+        #[unsafe(method(mouseMoved:))]
+        fn mouse_moved(&self, _e: &NSEvent) {
+            if let Some(a) = app::get() {
+                a.hot_zone_event();
+            }
+        }
+
+        #[unsafe(method(mouseExited:))]
+        fn mouse_exited(&self, _e: &NSEvent) {
+            if let Some(a) = app::get() {
+                a.hot_zone_event();
+            }
+        }
+
+        #[unsafe(method(mouseDown:))]
+        fn mouse_down(&self, _e: &NSEvent) {
+            if let Some(a) = app::get() {
+                a.hot_zone_click();
+            }
+        }
+    }
+);
+
+impl HotZoneView {
+    pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ViewIvars::default());
+        // SAFETY: designated NSView initialiser.
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
+/// Replaces the view's tracking area with one covering its whole bounds.
+fn refresh_tracking(view: &NSView, slot: &RefCell<Option<Retained<NSTrackingArea>>>) {
+    let old = slot.borrow_mut().take();
+    if let Some(old) = old {
+        view.removeTrackingArea(&old);
+    }
+    let opts = NSTrackingAreaOptions::MouseEnteredAndExited
+        | NSTrackingAreaOptions::MouseMoved
+        | NSTrackingAreaOptions::ActiveAlways
+        | NSTrackingAreaOptions::InVisibleRect
+        | NSTrackingAreaOptions::EnabledDuringMouseDrag;
+    let owner: &objc2::runtime::AnyObject = view;
+    // SAFETY: owner is the view itself (kept alive by the view hierarchy while
+    // the area is installed); no userInfo.
+    let area = unsafe {
+        NSTrackingArea::initWithRect_options_owner_userInfo(
+            NSTrackingArea::alloc(),
+            NSRect::ZERO,
+            opts,
+            Some(owner),
+            None,
+        )
+    };
+    view.addTrackingArea(&area);
+    *slot.borrow_mut() = Some(area);
+}
+
+/// Transparent content layer of the island (closed strip or open page). It
+/// draws its own ops at full alpha; the island's opacity fades it, and it
+/// never takes clicks (they go to the island view).
+pub struct ContentIvars {
+    pub page: bool,
+}
+
+define_class!(
+    // SAFETY: NSView may be subclassed; no Drop impl; the only ivar is a bool.
+    #[unsafe(super(NSView, NSResponder, objc2::runtime::NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "NoxContentView"]
+    #[ivars = ContentIvars]
+    pub struct ContentView;
+
+    impl ContentView {
+        #[unsafe(method(isFlipped))]
+        fn is_flipped(&self) -> bool {
+            true
+        }
+
+        #[unsafe(method(isOpaque))]
+        fn is_opaque(&self) -> bool {
+            false
+        }
+
+        #[unsafe(method(hitTest:))]
+        fn hit_test(&self, _point: NSPoint) -> *mut NSView {
+            // Clicks pass to the island view below.
+            std::ptr::null_mut()
+        }
+
+        #[unsafe(method(drawRect:))]
+        fn draw_rect(&self, _dirty: NSRect) {
+            if let Some(a) = app::get() {
+                a.draw_content(self.ivars().page);
+            }
+        }
+    }
+);
+
+impl ContentView {
+    pub fn new(mtm: MainThreadMarker, frame: NSRect, page: bool) -> Retained<Self> {
+        let this = Self::alloc(mtm).set_ivars(ContentIvars { page });
+        // SAFETY: designated NSView initialiser.
+        unsafe { msg_send![super(this), initWithFrame: frame] }
+    }
+}
+
 impl IslandView {
     pub fn new(mtm: MainThreadMarker, frame: NSRect) -> Retained<Self> {
         let this = Self::alloc(mtm).set_ivars(ViewIvars::default());

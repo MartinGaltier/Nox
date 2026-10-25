@@ -6,6 +6,10 @@ edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
 
+[features]
+# Opt-in hover driver for release measurements (never in shipped builds).
+hover-probe = []
+
 [dependencies]
 nox-core.workspace = true
 log.workspace = true
@@ -18,7 +22,7 @@ dispatch2.workspace = true
 # of build artifacts and minutes of compile time). Versions match the workspace.
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFArray", "CFCGTypes", "CFString", "CFDictionary"] }
 objc2-core-graphics = { version = "0.3", default-features = false, features = ["std", "objc2", "CGContext", "CGWindow", "CGDirectDisplay", "CGDisplayConfiguration", "CGColor", "CGError", "libc"] }
-objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "CALayer"] }
+objc2-quartz-core = { version = "0.3", default-features = false, features = ["std", "objc2-core-foundation", "objc2-core-graphics", "CALayer", "CADisplayLink", "CAShapeLayer", "CATransaction"] }
 objc2-foundation = { version = "0.3", default-features = false, features = [
     "std", "block2", "objc2-core-foundation", "NSArray", "NSData", "NSDate", "NSDictionary",
     "NSEnumerator", "NSError", "NSGeometry", "NSNotification", "NSObjCRuntime", "NSObject",
