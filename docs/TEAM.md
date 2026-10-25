@@ -20,3 +20,12 @@ Règles : contrats communs dans `nox-core` (propriété du coordinateur), propri
 par agent (`docs/ARCHITECTURE.md`), intégration sur `main` uniquement par le coordinateur
 (merge sans réécriture d'historique), revues croisées après intégration, statut de parité
 par agent dans `docs/parity/<agent>.md` fusionné dans `docs/PARITY.md`.
+
+## Modèles
+
+Jusqu'au 2026-10-25, le coordinateur et les cinq agents tournaient sur Claude Opus 5.5.
+À la demande de l'utilisateur (2026-10-25), le coordinateur reste sur Opus 5.5 et les agents
+encore actifs ont été relancés sur **Claude Haiku 5.5 (effort high)** : `interface` (page
+Mixeur) et `integrations` (niveaux audio réels B7). Un agent existant ne pouvant pas changer
+de modèle, les anciens agents ont été arrêtés après vérification qu'aucun travail n'était
+perdu (le seul travail non commité, dans `agent/audio`, a été vérifié et commité : f377a77).
