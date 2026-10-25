@@ -3,7 +3,7 @@
 Statuts : **à faire** · **en cours** · **implémentée** (code + vérif automatique) · **testée** (validée sur le Mac M2 réel, preuve notée) · **bloquée** (raison).
 Une ligne « implémentée » n'est pas « testée » tant qu'une validation physique n'a pas été exécutée.
 
-Détail, preuves et commandes de vérification par domaine : `docs/parity/{interface,integrations,activities,metrics,power}.md`, `docs/METRICS_SOURCES.md`, `docs/SLEEP_RECOVERY.md`. Dernière mise à jour : 2026-10-24.
+Détail, preuves et commandes de vérification par domaine : `docs/parity/{interface,integrations,activities,metrics,power,audio}.md`, `docs/AUDIO.md`, `docs/METRICS_SOURCES.md`, `docs/SLEEP_RECOVERY.md`. Dernière mise à jour : 2026-10-24.
 
 Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE Automatisation (Apple Events) · FDA Accès complet au disque · SCR Enregistrement d'écran · BT Bluetooth · ADM admin une fois (helper).
 
@@ -42,7 +42,7 @@ Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE
 | B4 | Lecture aléatoire / répétition | `NotchShuffleService` | Musique, Spotify | AE | AppleScript (NSAppleScript main thread) | Bascule visible dans le lecteur | implémentée — non testée (nécessite Musique/Spotify) |
 | B5 | Paroles synchronisées | `NotchLyricsService` : LRCLIB en ligne (`notchLyricsOnline`), synchro ligne | LRCLIB | réseau | Client HTTP + cache disque | Ligne active suit la lecture | implémentée ; requête LRCLIB réelle testée |
 | B6 | File des prochains morceaux | `NowPlayingQueue` + AppleScript | Musique (et Spotify selon API) | AE / MediaRemote | idem | ≥ 3 prochains titres corrects | implémentée partielle (Musique estimé, Spotify non supporté) |
-| B7 | Visualisation audio | `notchLiveEqualizer` (niveaux réels via `NotchAudioLevelService`) sinon barres animées | — | Enregistrement audio système (process tap) ou animation | Process tap Core Audio si dispo, sinon animation marquée « non mesurée » | Barres réagissent au son | bloquée (vrais niveaux = capture audio système ; animation non mesurée) |
+| B7 | Visualisation audio | `notchLiveEqualizer` (niveaux réels via `NotchAudioLevelService`) sinon barres animées | — | Enregistrement audio système (process tap) ou animation | Process tap Core Audio si dispo, sinon animation marquée « non mesurée » | Barres réagissent au son | implémentée (nox-audio LevelMeter, opt-in) — branchement musique en cours ; non testée avec un vrai tap (invite système = validation utilisateur, docs/AUDIO.md) |
 | B8 | Pochettes navigateur | `notchBrowserCovers` (YouTube etc.) | Safari, Chrome | — | Artwork MediaRemote + fallback | — | implémentée (opt-in) ; requêtes iTunes et miniature YouTube réelles testées ; session Firefox sur fixtures |
 | B9 | Lecteur préféré | `notchPreferredPlayer`, `notchIncludeOtherPlayers` | — | — | `MusicSettings.preferred_player` | — | implémentée ; sélection testée (2 lecteurs) ; commandes vers un lecteur non courant refusées par macOS (repli AppleScript Musique/Spotify) |
 | B10 | Activité changement de piste | `notchTrackChange`, `notchMusicActivity` : compact montre pochette + égaliseur | — | — | Alerte compacte | — | implémentée |
@@ -85,7 +85,7 @@ Légende permissions : CAL Calendriers · CAM Caméra · AX Accessibilité · AE
 | E6 | Raccourcis / actions rapides | Accès rapide (verrouiller, capture, etc.), `notchQuickAccess*` | Raccourcis.app | — | `nox-integrations::shortcuts` | Chaque action exécutée | implémentée partielle (Concentration/NPD sans API publique) |
 | E7 | Contrôles volume / luminosité / clavier / micro / source | `notchVolume`, `Brightness`, `KeyboardLight`, `Microphone`, `InputSource`, ordre `notchControlOrder` | — | — | CoreAudio, DisplayServices (privé) | Curseurs agissent | implémentée ; volume/micro/luminosité testés, rétroéclairage clavier vérifié (sélecteurs macOS 27), sources d'entrée implémentées |
 | E8 | HUD volume/luminosité dans l'îlot | `NotchVolumeKeyGate` | — | AX (event tap) | À évaluer | — | implémentée (HUD dans l'îlot via écouteurs CoreAudio/DisplayServices, HUD système conservé ; notification luminosité testée) |
-| E9 | Mixeur par app | section `mixer` | — | process taps CoreAudio | hors priorité (utilitaire séparé) | — | à faire (évalué : capture audio) |
+| E9 | Mixeur par app | section `mixer` | — | process taps CoreAudio | hors priorité (utilitaire séparé) | — | implémentée (nox-audio, opt-in, fail-open) — UI en cours ; non testée avec un vrai tap (validation utilisateur, docs/AUDIO.md) |
 | E10 | Presse-papiers dans l'îlot | section `clipboard` | — | — | Historique local | — | implémentée (opt-in, mémoire seule) ; pasteboard privé testé ; alerte macOS sur le presse-papiers général = validation utilisateur |
 | E11 | Captures récentes | section `captures` | — | — | Dossier captures | — | implémentée (fixtures + rendu) ; vraie capture non testée, module désactivé par défaut |
 | E12 | Bloc-notes | section `scratchpad` | — | — | Fichier local | — | implémentée (fichier temporaire testé, éditeur natif) |
