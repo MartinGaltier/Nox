@@ -151,6 +151,7 @@ impl IslandModel {
         now: f64,
         hover: Option<Point>,
     ) -> Scene {
+        let _p = crate::perf::Probe::new("scene");
         let size = self.size();
         let mut s = Scene::default();
         let open = self.motion.open.value.clamp(0.0, 1.0);

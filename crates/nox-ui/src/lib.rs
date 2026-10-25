@@ -11,6 +11,7 @@ pub mod geometry;
 pub mod gesture;
 pub mod island;
 pub mod machine;
+pub mod perf;
 pub mod scene;
 pub mod spring;
 pub mod views;
